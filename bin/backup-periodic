@@ -1,0 +1,7 @@
+#!/bin/sh
+##
+## Incremental Backup Periodic Script
+## by Andriy Berestovskyy
+##
+
+nice -20 /usr/local/bin/backup /usr/local/etc/$(hostname -s).backup.conf

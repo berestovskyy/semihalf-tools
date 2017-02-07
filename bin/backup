@@ -1,0 +1,193 @@
+#!/bin/sh
+##
+## Incremental Backup Script
+## by Andriy Berestovskyy
+##
+
+BACKUP_DIR_FMT="%Y%m%d-%H%M"
+BACKUP_DIR_DATE_LEN="8" ## excluding time, i.e. just len of %Y%m%d
+
+REQUIRE="rsync"
+
+usage () {
+    echo "Incremental Backup Script: local directories -> remote host"
+    echo "Requirements:"
+    echo "    apt install ${REQUIRE}"
+    echo
+    echo "Usage:"
+    echo "    ${0##*/} <config_file>"
+    echo "        - to backup dirs specified in config to the remote host"
+    echo "Example:"
+    echo "    ${0##*/} /usr/local/etc/backup.conf"
+    echo
+    echo "Installation for incremental periodic backups:"
+    echo "    0. Setup a new passwordless SSH connection to the backup host:"
+    echo "       sh -c \"su --login root\"   # login as a root"
+    echo "       ssh-keygen                # generate an SSH key for root"
+    echo "       passwordless user@backup  # setup passwordless connection to backup host"
+    echo "    1. Put ${0##*/} script to /usr/local/bin"
+    echo "    2. Put example.${0##*/}.conf to /usr/local/etc/$(hostname -s).${0##*/}.conf"
+    echo "    2. Put ${0##*/}-periodic to /etc/cron.hourly"
+    exit 1
+}
+log () {
+    if [ -f "${BACKUP_LOG}" ]; then
+        echo "==> $(date +'%Y-%m-%d %H:%M:%S'): ${*}" | tee -a "${BACKUP_LOG}"
+    else
+        echo "==> $(date +'%Y-%m-%d %H:%M:%S'): ${*}"
+    fi
+}
+error () {
+    log "error ${*}"
+    exit 1
+}
+
+if ! which ${REQUIRE} > /dev/null 2>&1; then
+    error "checking the requirements, please run:\n    apt install ${REQUIRE}"
+fi
+
+## Check command line arguments
+if [ "$#" -lt "1" -o "${1}" = "-h" -o "${1}" = "--help" ]; then
+    usage
+fi
+BACKUP_CONFIG="${1}"
+
+## Read config file
+if [ -s "${BACKUP_CONFIG}" ]; then
+    log "reading configuration file: ${BACKUP_CONFIG}"
+    . "${BACKUP_CONFIG}"
+else
+    error "reading ${BACKUP_CONFIG}"
+fi
+
+## Init log file
+if ! touch "${BACKUP_LOG}"; then
+    log "error accessing log file, falling back to /dev/tty..."
+    BACKUP_LOG="/dev/tty"
+fi
+
+## Prepare default exclude
+DEF_EXCLUDES=""
+for EXCLUDE in ${BACKUP_DEF_EXCLUDES}; do
+    DEF_EXCLUDES="${DEF_EXCLUDES} --exclude ${EXCLUDE}"
+done
+
+## Backup to all the destinations
+for BACKUP_DST in ${BACKUP_DSTS}; do
+    log "backing up to ${BACKUP_DST}"
+    BACKUP_PATH="${BACKUP_DST##*:}"
+    BACKUP_USERHOST="${BACKUP_DST%%:*}"
+    BACKUP_HOSTNAME="${BACKUP_USERHOST##*@}"
+    BACKUP_IP=$(getent hosts ${BACKUP_HOSTNAME} | cut -d ' ' -f 1 | head -1)
+
+    ## Prepare time stamps and link destination
+    BACKUP_CUR_TS=$(date +"${BACKUP_DIR_FMT}")
+    BACKUP_DST_DIRS=$(ssh "${BACKUP_USERHOST}" sh -c "'mkdir -p ${BACKUP_PATH} && find ${BACKUP_PATH} -mindepth 1 -maxdepth 1 -type d'" | grep -E '/[-0-9]+$' | sort -rn)
+    BACKUP_LAST_TS=$(echo "${BACKUP_DST_DIRS}" | head -1)
+    BACKUP_LINK_DEST="--link-dest ${BACKUP_PATH}"
+    if [ -n "${BACKUP_LAST_TS}" ]; then
+        BACKUP_LINK_DEST="${BACKUP_LINK_DEST} --link-dest '${BACKUP_LAST_TS}'"
+        log "    based on ${BACKUP_LAST_TS}"
+    fi
+
+    ## Find old hourly backups
+    BACKUP_DAILY_DIRS=$(echo "${BACKUP_DST_DIRS}" | tail -n +${BACKUP_KEEP_LAST} | sort -n)
+    LAST_DAY=""
+    REMOVED=0
+    BACKUP_TO_REMOVE=""
+    OLD_IFS="${IFS}"
+    IFS="
+"
+    for DAILY_DIR in ${BACKUP_DAILY_DIRS}; do
+        DAY=$(echo "${DAILY_DIR}" | rev | cut -d '/' -f 1 | rev | cut -c 1-${BACKUP_DIR_DATE_LEN})
+        if [ "${DAY}" = "${LAST_DAY}" ]; then
+            ## Remove same day backup
+            BACKUP_TO_REMOVE="${BACKUP_TO_REMOVE} '${DAILY_DIR}'"
+            REMOVED=$((${REMOVED} + 1))
+        fi
+        LAST_DAY=${DAY}
+    done
+
+    ## Find old daily backups
+    BACKUP_DAILY_BACKUPS=$(echo "${BACKUP_DAILY_DIRS}" | wc -l)
+    DAYS_TO_REMOVE=$((${BACKUP_DAILY_BACKUPS} - ${REMOVED} - ${BACKUP_KEEP_DAYS}))
+    if [ "${DAYS_TO_REMOVE}" -gt "0" ]; then
+        BACKUP_OLD_DAILY_DIRS=$(echo "${BACKUP_DAILY_DIRS}" | head -${DAYS_TO_REMOVE})
+        for DAILY_DIR in ${BACKUP_OLD_DAILY_DIRS}; do
+            BACKUP_TO_REMOVE="${BACKUP_TO_REMOVE} '${DAILY_DIR}'"
+        done
+    fi
+    IFS="${OLD_IFS}"
+
+    ## Remove old backups
+    if [ -n "${BACKUP_TO_REMOVE}" ]; then
+        log "removing old backups: ${BACKUP_TO_REMOVE}"
+        ssh "${BACKUP_USERHOST}" rm -rf "${BACKUP_TO_REMOVE}" >> ${BACKUP_LOG} 2>&1
+    fi
+
+    ## Backup all files
+    for BACKUP_FILE in ${BACKUP_FILES}; do
+        log "    ${BACKUP_FILE}"
+        ## Try to read exclude patters file
+        EXCLUDE_FROM=""
+        if [ -s "${BACKUP_FILE}/${BACKUP_EXCLUDE_FILE}" ]; then
+            EXCLUDE_FROM="--exclude-from ${BACKUP_FILE}/${BACKUP_EXCLUDE_FILE}"
+            ## Do not use default excludes if there is an exclude file
+            EXCLUDES=""
+        else
+            EXCLUDES="${DEF_EXCLUDES}"
+        fi
+
+        ## Rsync changes to the destination
+        if rsync -za --del --delete-excluded --relative \
+            ${EXCLUDES} ${EXCLUDE_FROM} ${BACKUP_LINK_DEST} \
+            "${BACKUP_FILE}" "${BACKUP_DST}/${BACKUP_CUR_TS}" >> ${BACKUP_LOG} 2>&1; then
+            ## Inform user about the successfull backup
+            if [ -n "${BACKUP_OK_FILE}" -a -d "${BACKUP_FILE}" ]; then
+                rm -f "${BACKUP_FILE}/${BACKUP_ERROR_FILE}"
+                INFO="${BACKUP_FILE}/${BACKUP_OK_FILE}"
+                if ! touch "${INFO}"; then
+                    log "error creating info file, falling back to /dev/tty"
+                    INFO="/dev/tty"
+                fi
+                echo "Directory name:     ${BACKUP_FILE}" \
+                    > "${INFO}"
+                echo "Most recent backup: $(date +'%Y-%m-%d %H:%M:%S')" \
+                    >> "${INFO}"
+                echo "Backup host name:   ${BACKUP_HOSTNAME} (${BACKUP_IP})" \
+                    >> "${INFO}"
+                echo "Backup destination: ${BACKUP_DST}/${BACKUP_CUR_TS}${BACKUP_FILE}" \
+                    >> "${INFO}"
+                if [ -n "${BACKUP_LAST_TS}" ]; then
+                    echo "Incremental backup: based on ${BACKUP_LAST_TS##*/}" \
+                        >> "${INFO}"
+                fi
+                if [ -n "${EXCLUDE_FROM}" ]; then
+                    echo "Used exclude file:  ${BACKUP_FILE}/${BACKUP_EXCLUDE_FILE}" \
+                        >> "${INFO}"
+                else
+                    echo "\nRsync exclude patterns applied to the directory by default:" \
+                        >> "${INFO}"
+                    echo "${BACKUP_DEF_EXCLUDES}" \
+                        >> "${INFO}"
+                    echo "To override the list please put custom rsync exclude patterns into:" \
+                        >> "${INFO}"
+                    echo "    ${BACKUP_FILE}/${BACKUP_EXCLUDE_FILE}" \
+                        >> "${INFO}"
+                fi
+            fi
+        else
+            ## Inform user about the unsuccessfull backup
+            if [ -n "${BACKUP_ERROR_FILE}" -a -d "${BACKUP_FILE}" ]; then
+                rm -f "${BACKUP_FILE}/${BACKUP_OK_FILE}"
+                INFO="${BACKUP_FILE}/${BACKUP_ERROR_FILE}"
+                echo "Backup failed at:  $(date +'%Y-%m-%d %H:%M:%S')" \
+                    > "${INFO}"
+                echo "Please check the log file for details:" >> "${INFO}"
+                echo "    ${BACKUP_LOG}" >> "${INFO}"
+            fi
+        fi
+    done
+done
+
+log "done."

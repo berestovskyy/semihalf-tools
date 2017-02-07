@@ -1,0 +1,87 @@
+#!/bin/sh
+##
+## Remote Host Backup Script
+## by Andriy Berestovskyy
+##
+
+REQUIRE="rsync"
+
+usage () {
+    echo "Remote Host Backup Script: remote host dirs -> local directory"
+    echo "Requirements:"
+    echo "    apt install ${REQUIRE}"
+    echo
+    echo "Usage:"
+    echo "    ${0##*/} host1 [host2...]"
+    echo "        - to backup specified hosts to the local directory"
+    echo
+    echo "Example:"
+    echo "    ${0##*/} l1 l2 l3"
+    echo
+    echo "Note: the backup is complete for user and local directories, i.e.:"
+    echo "    /root"
+    echo "    /home"
+    echo "    /usr/local"
+    echo "For the rest of files the backup is incremental."
+    echo "The modification time of /vmlinuz is used for the incremental backup."
+    exit 1
+}
+log () {
+    echo "==> ${0##*/}: ${*}"
+}
+error () {
+    log "error ${*}"
+    exit 1
+}
+
+if ! which ${REQUIRE} > /dev/null 2>&1; then
+    error "checking the requirements, please run:\n    apt install ${REQUIRE}"
+fi
+
+
+if [ "$#" -lt "1" ]; then
+    usage
+fi
+
+HOSTS="${*}"
+for HOST in ${HOSTS}; do
+    BACKUP_HOST=${HOST##*@}
+    BACKUP_USER=${HOST%%@*}
+    if [ "${BACKUP_USER}" = "${HOST}" ]; then
+        BACKUP_USER="root"
+    fi
+    BACKUP_DIR="./${BACKUP_HOST}.$(date +%Y%m%d).backup"
+    log "backing up ${HOST} to ${BACKUP_DIR}..."
+    mkdir -p "${BACKUP_DIR}"
+    SETUP_DATE=$(ssh "${BACKUP_USER}@${BACKUP_HOST}" \
+        "ls -l --time-style=long-iso /vmlinuz \
+        | awk '{print \$6}'")
+    if [ -z "${SETUP_DATE}" ]; then
+        SETUP_DATE="2000-01-01"
+    fi
+    log "    incremental backup base date: ${SETUP_DATE}"
+    ssh "${BACKUP_USER}@${BACKUP_HOST}" find / \
+            '\(' -type f -a -newermt "${SETUP_DATE}" '\)' \
+            -o '\(' '\(' -type f -o -type l '\)' \
+                -a '\(' -path '/root/\*' \
+                        -o -path '/home/\*' \
+                        -o -path '/usr/local/\*' \
+                    '\)' \
+            '\)' 2> /dev/null \
+        | egrep -v '^/(proc|dev|var|run|sys|tmp|usr/share/man|mnt|usr/lib)/' \
+        | egrep -v '^/(usr/share/mime)/' \
+        | egrep -v '/(x86_64-native-linuxapp-gcc|build)/' \
+        | egrep -v '\.(compiled|pyc|old|cache|dpkg-cache|bin|psf|org|orig)$' \
+        | egrep -v '\.(sample|mod|lst|o|img|pf2|plymouth|symbols|softdep)$' \
+        | egrep -v '\.(dep|devname|alias)$' \
+        | egrep -v '/(cscope.out|GPATH|GRTAGS|GSYMS|GTAGS)$' \
+        | egrep -v '/(initrd)[^/]*$' \
+        > "${BACKUP_DIR}/files"
+    rsync -za --files-from "${BACKUP_DIR}/files" "${BACKUP_USER}@${BACKUP_HOST}":/ "${BACKUP_DIR}"
+    log "    starting to compress ${BACKUP_DIR} in background..."
+    tar czf "${BACKUP_DIR}.tgz" "${BACKUP_DIR}" &
+done
+log "waiting for the background jobs to complete..."
+wait
+
+log "done."

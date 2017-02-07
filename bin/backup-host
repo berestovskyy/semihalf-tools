@@ -7,13 +7,13 @@
 REQUIRE="rsync"
 
 usage () {
-    echo "Remote Host Backup Script: remote host dirs -> local directory"
+    echo "Remote Host Backup Script: remote target -> current directory"
     echo "Requirements:"
     echo "    apt install ${REQUIRE}"
     echo
     echo "Usage:"
     echo "    ${0##*/} host1 [host2...]"
-    echo "        - to backup specified hosts to the local directory"
+    echo "        - to backup specified hosts to the current directory"
     echo
     echo "Example:"
     echo "    ${0##*/} l1 l2 l3"

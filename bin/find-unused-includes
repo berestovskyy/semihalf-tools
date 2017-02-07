@@ -1,0 +1,97 @@
+#!/usr/bin/perl
+use strict;
+use warnings;
+use File::Find::Rule;
+use Cwd;
+
+#################
+# Author: MST
+#################
+# This script runs through all source files in given path, deletes one
+# include at a time and runs compilation to check if the include is really needed.
+# All includes in all .c files are checked.
+# The idea is to remove unused includes speeding up compilation time.
+
+# RUN THE SCRIPT IN THE FOLDER THAT IS PARENT OF YOUR REPO FOLDER
+#################
+
+# MIGHT WANNA CHANGE THESE GLOBALS:
+my $path_to_code = 'package/network/services/nfp/src/examples/nfp';
+my $compilation_cmd = 'make package/network/services/nfp/compile -j1 V=s >/dev/null 2>&1';
+my $repo_folder_name = 'repo';
+# END
+
+
+open(LOG_FILE, ">", "includes_to_remove.txt" ) or die("cant open file");
+
+chdir $repo_folder_name;
+
+my @files = File::Find::Rule->file()->name('*.c')->in($path_to_code);
+
+#foreach source file in given path
+foreach my $file (@files) {
+	#get all includes
+	open(FILE, $file) or die("cant open file $!");
+	my @includes; #line numbers of all includes
+	my $idx = 0;
+	my @file_lines; #original copy of given file
+	print("doing file " . $file . "\n");
+	foreach my $line (<FILE>) {
+		if ($line =~ /^#include/) {
+			push @includes, $idx;
+		}
+		push @file_lines, $line;
+		$idx++;
+	}
+	close(FILE);
+
+	#loop - remove includes starting from the first one
+	my @unused_includes;
+	foreach my $include (@includes) {
+		#remove include
+		open(FILE, ">", $file) or die("cant open file $!");
+		$idx = 0;
+		foreach my $line (@file_lines) {
+			print FILE $line unless ($idx == $include);
+			$idx++;
+		}
+		close(FILE);
+
+		#include removed, now compile
+		system($compilation_cmd);
+
+		#check result
+		if ($? & 127) {
+			my $signal = $? & 127;
+			die ("Caught signal $signal");
+		}
+		if ($? == 0) {
+			#compilation worked - include was unused
+			my $log_str ="unused include! "."file=".$file. ", line no.=" . ($include + 1) ."\n"; 
+			print($log_str);
+			print LOG_FILE $log_str;
+			push @unused_includes, $include;
+		}
+
+		#restore file
+		open(FILE, ">", $file) or die("cant open file $!");
+		print FILE @file_lines;
+		close(FILE);
+	}
+
+	####### THE FOLLOWING DOESNT WORK
+	## if a symbol is exported, the file will compile but others may not.
+	## cannot let script remove the includes, they must be manually inspected.
+	#######
+
+	## now remove all the marked includes
+	#my %hash = map { $_ => 1 } @unused_includes;
+	#open(FILE, ">", $file) or die("cant open file $!");
+	#$idx = 0;
+	#foreach my $line (@file_lines) {
+	#	print FILE $line unless (exists($hash{$idx}));
+	#	$idx++;
+	#}
+	#close(FILE);
+}
+close(LOG_FILE);

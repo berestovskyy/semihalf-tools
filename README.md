@@ -32,3 +32,16 @@ to periodically store local directories to the specified remote host.
 To setup a passwordless ssh connection with the specified host(s).
 Example usage:
     passwordless a@l5
+
+
+## find-unused-includes
+Scans .c files in the given path looking for unused includes.
+There may be false positives.
+Install Find::Rule module before use: 'cpan File::Find::Rule'.
+Edit global variables at the start of the files (paths and command).
+Example usage:
+    'find-unused-includes' works its magic and generates includes_to_remove.txt.
+
+## remove-unused-includes
+Removes redundant #include lines in .c files previously marked by 'find-unused-includes'.
+    'remove-unused-includes < includes_to_remove.txt' removes the marked lines.

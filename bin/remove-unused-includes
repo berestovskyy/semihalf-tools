@@ -1,0 +1,39 @@
+#!/usr/bin/perl
+use strict;
+use warnings;
+use Cwd;
+
+#################
+# Author: MST
+#################
+# Removes lines marked by find-unused-includes
+# Usage: remove-unused-includes < includes_to_remove.txt
+#################
+
+my $repo_folder_name = 'repo';
+chdir $repo_folder_name;
+
+my %hash = ();
+#read includes_to_remove.txt from STDIN
+while (<>) {
+	$_ =~ /file=(.+),.+=(\d+)/;
+	#key - file path, value - array of line numbers
+	push(@{$hash{$1}}, $2);
+}
+foreach my $file (keys %hash) {
+	my $line_numbers = $hash{$file};
+	my %line_numbers_hash = map {$_ => 1} @{$line_numbers};
+
+	open(FILE, $file) or die("cant open file $!");
+	my @lines = <FILE>;
+	close(FILE);
+
+	open(FILE, ">", $file) or die("cant open file $!");
+	my $idx = 1; #line number index
+	foreach my $line (@lines) {
+		print FILE $line unless (exists($line_numbers_hash{$idx}));
+		$idx++;
+	}
+	close(FILE);
+}
+

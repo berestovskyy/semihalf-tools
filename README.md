@@ -34,6 +34,12 @@ Example usage:
     passwordless a@l5
 
 
+## power
+Power management frontend tool.
+Example usage:
+    power on l3 l5
+
+
 ## find-unused-includes
 Scans .c files in the given path looking for unused includes.
 There may be false positives.
@@ -41,6 +47,7 @@ Install Find::Rule module before use: 'cpan File::Find::Rule'.
 Edit global variables at the start of the files (paths and command).
 Example usage:
     'find-unused-includes' works its magic and generates includes_to_remove.txt.
+
 
 ## remove-unused-includes
 Removes redundant #include lines in .c files previously marked by 'find-unused-includes'.

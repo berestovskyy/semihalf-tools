@@ -1,0 +1,223 @@
+#!/bin/sh
+##
+## Power Management Frontend Tool
+## by Andriy Berestovskyy
+##
+
+BACKEND="10.3.210.166" ## storage
+
+usage () {
+    if [ -n "$1" ]; then
+        echo "${0##*/}: $1"
+    else
+        echo "Power Management Frontend Tool"
+        echo "Usage:"
+        echo "    Power on or show status of the specified host(s):"
+        echo "        ${0##*/} {on|show|status} host1 [host2...]"
+        echo "    Power off or reset specified host(s):"
+        echo "        ${0##*/} [-f] {off|reset} [-f] host1 [host2...]"
+        echo "               -f  force power off or reset (do not use soft actions)"
+        echo "    Lock or unlock auto power management for the specified host(s):"
+        echo "        ${0##*/} {lock|unlock} host1 [host2...]"
+        echo "    Activate IPMI console to the specified host:"
+        echo "        ${0##*/} console host"
+        echo "    List all the hosts available in the specified project(s):"
+        echo "        ${0##*/} list project1 [project2...]"
+        echo "    Print backend usage information:"
+        echo "        ${0##*/} help"
+        echo "Example:"
+        echo "    ${0##*/} on l3 l5"
+    fi
+    exit 1
+}
+
+run () {
+    if [ "${USER}" = "a" ]; then
+        ssh aber@${BACKEND} "${*}"
+    else
+        ssh ${BACKEND} "${*}"
+    fi
+    if [ "$?" -ne "0" ]; then
+        usage "stoped on error."
+    fi
+}
+
+log_action () {
+    local __act="${1}"
+    local __hosts="${2}"
+    local __soft="${3}"
+
+    case "${__act}" in
+    "on"|"off")
+        echo -n "Powering ${__act}"
+        ;;
+    "reset")
+        echo -n "Resetting"
+        ;;
+    "status"|"show")
+        echo -n "Quering status of"
+        ;;
+    "lock")
+        echo -n "Locking"
+        ;;
+    "unlock")
+        echo -n "Unlocking"
+        ;;
+    esac
+    case "${__act}" in
+    "reset"|"off")
+        if [ -z "${__soft}" ]; then
+            echo -n " (hard)"
+        fi
+        ;;
+    esac
+    echo ":${__hosts}"
+}
+
+if [ "$#" -lt "1" -o "$1" = "-h" -o "$1" = "--help" ]; then
+    usage
+fi
+
+HOSTS=""
+ACTION=""
+SOFT_OPT="--soft"
+
+BACKEND_LIST=""
+BACKEND_NAMES=""
+
+## Process options
+for OPT in ${*}; do
+    case "${OPT}" in
+    "-f")
+        SOFT_OPT=""
+        shift
+        ;;
+    *)
+        if [ -z "${ACTION}" ]; then
+            ACTION="${OPT}"
+            shift
+        else
+            ## Convert partial host names to full names
+            if [ -z "${BACKEND_LIST}" ]; then
+                BACKEND_LIST=$(run pws --list | sort)
+                BACKEND_NAMES=$(echo "${BACKEND_LIST}" | awk '{print $1}')
+            fi
+            __n1=`echo "${BACKEND_NAMES}" | egrep -i "(^|-|_)${OPT}"`
+            __n1_h=$(echo "${__n1}" | head -1)
+            __n2=`echo "${BACKEND_NAMES}" | egrep -i "${OPT}"`
+            __n2_h=$(echo "${__n2}" | head -1)
+            if [ -z "${__n1}" ]; then
+                __n1="${__n2}"
+                __n1_h="${__n2_h}"
+            fi
+            ## Unresolved or ambigous host name
+            if [ -z "${__n1}" -o "${__n1}" != "${__n1_h}" ]; then
+                case "${OPT}" in
+                ## Special case for builder
+                "builder"|"build"*)
+                    __n1="contrail_s5"
+                    ;;
+                *)
+                    ## Just add the original name
+                    __n1="${OPT}"
+                    ;;
+                esac
+            fi
+            if [ "${OPT}" != "${__n1}" ]; then
+                echo "Resolved: ${OPT} to ${__n1}"
+            fi
+            HOSTS="${HOSTS} ${__n1}"
+        fi
+        ;;
+    esac
+done
+
+case "${ACTION}" in
+"li"*)
+    ## Get the project name(s)
+    PROJECTS="${HOSTS}"
+    if [ -z "${PROJECTS}" ]; then
+        usage "please specify project(s) to list."
+    fi
+    PROJECTS=$(echo ${PROJECTS} | tr -s ' ' '|')
+    if [ -z "${BACKEND_LIST}" ]; then
+        BACKEND_LIST=$(run pws --list | sort)
+    fi
+    echo "${BACKEND_LIST}" | egrep -i "\b${PROJECTS}" \
+        | awk '{
+            if ($4) {
+                unlock_time = "23:00:00";
+                unlock_date = strftime("%Y-%m-%d");
+                if ($3 > unlock_date || $4 > unlock_time)
+                    printf "%-21s %-7s Locked by %s\n", $1, $2,
+                        gensub(/.*\((.*)\).*/, "\\1", "g", $4);
+                else
+                    printf "%-21s %-7s %s\n", $1, $2, "Unlocked";
+            } else {
+                printf "%-21s %-7s %s\n", $1, $2, "Unlocked";
+            }
+        }'
+    ;;
+"h"*)
+    ACTION="help"
+    echo "Backend usage information:"
+    run pws --${ACTION}
+    ;;
+*)
+    if [ -z "${HOSTS}" ]; then
+        usage "please specify host name(s)."
+    fi
+    ## Pass the soft option for off and reset actions
+    case "${ACTION}" in
+    "c"*)
+        ACTION="console"
+        TARGET_IPMI=$(run pws --status ${HOSTS})
+        if [ -z "${TARGET_IPMI}" ]; then
+            usage "error getting target status: ${HOSTS}"
+        fi
+        TARGET_IP=$(echo "${TARGET_IPMI}" | grep -i '^IP:' | awk '{print $2}')
+        TARGET_LOGIN=$(echo "${TARGET_IPMI}" | grep -i 'login/pass:' | awk '{print $3}')
+        TARGET_PASS=${TARGET_LOGIN##*/}
+        TARGET_LOGIN=${TARGET_LOGIN%%/*}
+        if [ -z "${TARGET_IP}" -o -z "${TARGET_LOGIN}" -o -z "${TARGET_PASS}" ]; then
+            usage "error getting target credentials:\n${TARGET_IPMI}"
+        fi
+        echo "Activating IPMI console to" \
+            "${TARGET_LOGIN}:${TARGET_PASS}@${TARGET_IP}..."
+        echo "Press Enter ~ . to exit."
+        ipmitool -U ${TARGET_LOGIN} -P ${TARGET_PASS} -H ${TARGET_IP} -I lanplus sol activate
+        echo
+        ;;
+    "lo"*)
+        ACTION="lock"
+        log_action "${ACTION}" "${HOSTS}" ""
+        run pws --${ACTION} ${HOSTS}
+        ;;
+    "on")
+        log_action "${ACTION}" "${HOSTS}" ""
+        run pws --${ACTION} ${HOSTS}
+        ;;
+    "of"*)
+        ACTION="off"
+        log_action "${ACTION}" "${HOSTS}" "${SOFT_OPT}"
+        run pws ${SOFT_OPT} --${ACTION} ${HOSTS}
+        ;;
+    "r"*)
+        ACTION="reset"
+        log_action "${ACTION}" "${HOSTS}" "${SOFT_OPT}"
+        run pws ${SOFT_OPT} --${ACTION} ${HOSTS}
+        ;;
+    "s"*)
+        ACTION="status"
+        log_action "${ACTION}" "${HOSTS}" ""
+        run pws --${ACTION} ${HOSTS}
+        ;;
+    "u"*)
+        ACTION="unlock"
+        log_action "${ACTION}" "${HOSTS}" ""
+        run pws --${ACTION} ${HOSTS}
+        ;;
+    esac
+    ;;
+esac
+echo "Done."

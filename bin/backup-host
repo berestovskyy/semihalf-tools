@@ -23,7 +23,7 @@ usage () {
     echo "    /home"
     echo "    /usr/local"
     echo "For the rest of files the backup is incremental."
-    echo "The modification time of /vmlinuz is used for the incremental backup."
+    echo "The modification time of /etc/alternatives/awk is used for the incremental backup."
     exit 1
 }
 log () {
@@ -54,7 +54,7 @@ for HOST in ${HOSTS}; do
     log "backing up ${HOST} to ${BACKUP_DIR}..."
     mkdir -p "${BACKUP_DIR}"
     SETUP_DATE=$(ssh "${BACKUP_USER}@${BACKUP_HOST}" \
-        "ls -l --time-style=long-iso /vmlinuz \
+        "ls -l --time-style=long-iso /etc/alternatives/awk \
         | awk '{print \$6}'")
     if [ -z "${SETUP_DATE}" ]; then
         SETUP_DATE="2000-01-01"

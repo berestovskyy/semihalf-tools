@@ -36,7 +36,8 @@ while true; do
     if [ "${_diff_time}" -gt "5" ]; then
         ## Reset the terminal
         echo "Resetting terminal..."
-        setterm --initialize
+        ## old systems use one dash
+        setterm -initialize
         tput init
         echo "Done resetting."
     fi

@@ -1,0 +1,497 @@
+#!/bin/sh
+##
+## Run DPDK Application Script
+## by Andriy Berestovskyy
+##
+
+DEF_SCRIPT_FNAME="run-dpdk-app"
+
+log () {
+    echo "    ${*}"
+}
+begin () {
+    echo "==> ${*}"
+}
+error () {
+    begin "Error ${*}"
+    exit 1
+}
+verbose () {
+    if [ "${VERBOSE}" = "YES" ]; then
+        log "${*}"
+    fi
+}
+usage () {
+    echo "${APP_NAME:-Run DPDK Application} Script"
+    echo
+    echo -n "Usage: ${SCRIPT_FNAME} [script options]"
+    for i in $(seq "${NB_IPS:-0}"); do
+        echo -n " ip${i}"
+    done
+    for i in $(seq "${NB_INTERFACES:-0}"); do
+        echo -n " if${i}"
+    done
+    echo " [app options]"
+    echo "Script options are:"
+    echo "    -h   this help message"
+    echo "    -c   clean DPDK and the application, do not run"
+    echo "    -d   enable debug mode"
+    echo "    -m   just make DPDK and the application, do not run"
+    echo "    -r   remake the application before run"
+    echo "    -v   verbose (print more info)"
+    echo "App options are:"
+    echo "${APP_OPTIONS}"
+    echo "Examples:"
+    echo "    ${SCRIPT_FNAME} -c"
+    echo "    ${SCRIPT_FNAME} -cm"
+    echo "    ${SCRIPT_FNAME} -r ${APP_EXAMPLE}"
+    exit 1
+}
+
+#################################################################
+## Initialization
+SCRIPT_FNAME="${0##*/}"
+
+begin "Reading config files..."
+## From generic to more specific
+for _f in \
+    "/usr/local/etc/${DEF_SCRIPT_FNAME}.conf" \
+    "$(pwd)/${DEF_SCRIPT_FNAME}.conf" \
+    "/usr/local/etc/${SCRIPT_FNAME}.conf" \
+    "${HOME}/.config/${SCRIPT_FNAME}.conf" \
+    "${0}.conf" \
+    "$(pwd)/${SCRIPT_FNAME}.conf"
+do
+    if [ -s "${_f}" ]; then
+        log "reading ${_f}"
+        . "${_f}"
+    fi
+done
+
+
+begin "Parsing script options..."
+CLEAN="NO"
+REMAKE_APP="NO"
+RUN_APP="YES"
+DEBUG_MODE="NO"
+DESTDIR=""
+MAKE_OPTS=""
+EXTRA_CFLAGS="-g"
+RUN_PREFIX=""
+VERBOSE="NO"
+while getopts ":hcdmrv" OPT; do
+    case "${OPT}" in
+    "h"|"?") usage;;
+    "c") CLEAN="YES"; RUN_APP="NO";;
+    "d")
+        DEBUG_MODE="YES"
+        DESTDIR="-debug"
+        MAKE_OPTS="V=1"
+        EXTRA_CFLAGS="-g -O0 -DDEBUG_APP -L/usr/lib/aarch64-linux-gnu"
+        RUN_PREFIX="gdb --args"
+        ;;
+    "m") RUN_APP="NO";;
+    "r") REMAKE_APP="YES";;
+    "v") VERBOSE="YES"
+        ;;
+    esac
+done
+shift $(expr ${OPTIND} - 1)
+verbose "extra C flags:      ${EXTRA_CFLAGS}"
+verbose "clean DPDK and app: ${CLEAN}"
+verbose "remake application: ${REMAKE_APP}"
+verbose "run application:    ${RUN_APP}"
+## Check the long help option
+if [ "${1}" = "--help" ]; then
+    usage
+fi
+
+
+_arch=$(arch)
+begin "Adjusting configuration for ${_arch}..."
+for _var in $(set | grep "_${_arch}=" | cut -d '=' -f 1); do
+    _v=${_var%_$(arch)}
+    eval ${_v}="\$${_var}"
+    eval _val="\$${_var}"
+    log "${_v}=\"${_val}\""
+done
+DESTDIR="${RTE_TARGET}${DESTDIR}"
+
+RUN_DIR="/var/run/${SCRIPT_FNAME}"
+sudo mkdir -p "${RUN_DIR}"
+
+
+#################################################################
+## DPDK library
+begin "Locating DPDK..."
+RTE_SDK=""
+for _dir in ${DPDK_DIRS}; do
+    verbose "checking ${_dir}"
+    if [ -d "${_dir}" ]; then
+        log "found DPDK: ${_dir}"
+        RTE_SDK="${_dir}"
+        break
+    fi
+done
+if [ -z "${RTE_SDK}" ]; then
+    error "finding DPDK library in ${DPDK_DIRS}"
+fi
+export RTE_SDK="${RTE_SDK}"
+export RTE_TARGET="${RTE_TARGET}"
+
+# Check the Bind tool is available
+BIND=""
+for _f in ${BIND_SUBPATHS}; do
+    _f="${RTE_SDK}/${_f}"
+    verbose "checking ${_f}"
+    if [ -s "${_f}" ]; then
+        log "found bind: ${_f}"
+        BIND="${_f}"
+        break
+    fi
+done
+
+if [ -z "${BIND}" ]; then
+    error "finding bind tool in ${BIND_SUBPATHS}"
+fi
+
+## Clean DPDK if needed
+if [ "${CLEAN}" = "YES" ]; then
+    begin "Cleaning DPDK in ${RTE_SDK}..."
+    (cd "${RTE_SDK}" && sudo rm -rdf "${DESTDIR}")
+fi
+
+## Make DPDK if needed
+TESTPMD="${RTE_SDK}/${DESTDIR}/${TESTPMD_SUBPATH}"
+if [ "${RUN_APP}" = "YES" -a ! -s "${TESTPMD}" ]; then
+    begin "Configuring DPDK in ${RTE_SDK}..."
+    verbose cd "${RTE_SDK}"
+    verbose "&&" sudo -E env PATH="${PATH}" ${MAKE} config \
+            EXTRA_CFLAGS="${EXTRA_CFLAGS}" \
+            ${MAKE_OPTS} O="${DESTDIR}" T=${RTE_TARGET}
+    (
+        cd "${RTE_SDK}" \
+        && sudo -E env PATH="${PATH}" ${MAKE} config \
+            EXTRA_CFLAGS="${EXTRA_CFLAGS}" \
+            ${MAKE_OPTS} O="${DESTDIR}" T=${RTE_TARGET}
+    )
+    begin "Making DPDK in ${RTE_SDK}..."
+    verbose cd "${RTE_SDK}"
+    verbose "&&" sudo -E env PATH="${PATH}" ${MAKE} all \
+            EXTRA_CFLAGS="${EXTRA_CFLAGS}" \
+            ${MAKE_OPTS} O="${DESTDIR}"
+    (
+        cd "${RTE_SDK}" \
+        && sudo -E env PATH="${PATH}" ${MAKE} all \
+            EXTRA_CFLAGS="${EXTRA_CFLAGS}" \
+            ${MAKE_OPTS} O="${DESTDIR}"
+    )
+    if [ ! -s "${TESTPMD}" ]; then
+        error "making DPDK: file not found ${TESTPMD}"
+    fi
+fi
+
+
+#################################################################
+## Application
+begin "Locating ${APP_NAME} application..."
+APP_DIR=""
+for _dir in ${APP_DIRS}; do
+    verbose "checking ${_dir}"
+    if [ -d "${_dir}" ]; then
+        log "found APP directory: ${_dir}"
+        APP_DIR="${_dir}"
+        break
+    fi
+done
+if [ -z "${APP_DIR}" ]; then
+    error "finding application in ${APP_DIRS}"
+fi
+
+## Clean the app if needed
+if [ "${CLEAN}" = "YES" ]; then
+    begin "Cleaning the application in ${APP_DIR}..."
+    (cd "${APP_DIR}" && sudo rm -rdf "${DESTDIR}")
+fi
+
+if [ -z "${APP_SUBPATH}" ]; then
+    APP="${APP_DIR}/${DESTDIR}/${APP_FNAME}"
+else
+    APP="${APP_DIR}/${APP_SUBPATH}/${DESTDIR}/${APP_SUBPATH}/${RTE_TARGET}/${APP_FNAME}"
+fi
+## Make the application if needed
+if [ "${REMAKE_APP}" = "YES" -o ! -s "${APP}" ]; then
+    begin "Making application in ${APP_DIR}..."
+    verbose cd "${APP_DIR}"
+    verbose "&&" sudo -E env PATH="${PATH}" ${MAKE} all \
+            EXTRA_CFLAGS="${EXTRA_CFLAGS}" \
+            ${MAKE_OPTS} O="${DESTDIR}"
+    (
+        cd "${APP_DIR}" \
+        && sudo -E env PATH="${PATH}" ${MAKE} all \
+            EXTRA_CFLAGS="${EXTRA_CFLAGS}" \
+            ${MAKE_OPTS} O="${DESTDIR}"
+    )
+    if [ ! -s "${APP}" ]; then
+        error "making application: file not found ${APP}"
+    fi
+fi
+
+
+if [ "${RUN_APP}" != "YES" ]; then
+    log "Done."
+    exit 0
+fi
+
+## Set default app arguments
+if [ -n "${APP_DEF_ARGS}" ]; then
+    set -- "${@}" ${APP_DEF_ARGS}
+fi
+
+
+#################################################################
+## Parse hosts/interfaces
+if_info_get() {
+    local _if_name="${1}"
+
+    _if_drv=$(readlink "/sys/class/net/${_if_name}/device/driver" \
+        | rev | cut -d '/' -f 1 | rev)
+    if [ -z "${_if_drv}" ]; then
+        _if_drv=$(cat "${RUN_DIR}/${_if_name}_if_drv" 2>/dev/null)
+        if [ -z "${_if_drv}" ]; then
+            error "getting kernel driver name for interface ${_if_name}"
+        fi
+    fi
+    sudo sh -c "echo '${_if_drv}' > '${RUN_DIR}/${_if_name}_if_drv'"
+
+    _if_pci=$(readlink "/sys/class/net/${_if_name}/device" \
+        | rev | cut -d '/' -f 1 | rev)
+    if [ -z "${_if_pci}" ]; then
+        _if_pci=$(cat "${RUN_DIR}/${_if_name}_if_pci" 2>/dev/null)
+        if [ -z "${_if_pci}" ]; then
+            error "getting PCI address for interface ${_if_name}"
+        fi
+    fi
+    sudo sh -c "echo '${_if_pci}' > '${RUN_DIR}/${_if_name}_if_pci'"
+
+    _ip=$(ip -o address show ${_if_name} | grep -w "inet" \
+        | awk '{print $4}' | cut -d '/' -f 1)
+    if [ -z "${_ip}" ]; then
+        _ip=$(cat "${RUN_DIR}/${_if_name}_ip" 2>/dev/null)
+    fi
+    sudo sh -c "echo '${_ip}' > '${RUN_DIR}/${_if_name}_ip'"
+
+    _mac=$(cat "/sys/class/net/${_if_name}/address" 2>/dev/null)
+    if [ -z "${_mac}" ]; then
+        _mac=$(cat "${RUN_DIR}/${_if_name}_mac" 2>/dev/null)
+    fi
+    sudo sh -c "echo '${_mac}' > '${RUN_DIR}/${_if_name}_mac'"
+}
+
+
+begin "Parsing hosts and interfaces..."
+_nb_ips=0
+_nb_ifs=0
+FILE_PREFIX=""
+IF_NAMES=""
+while : ; do
+    if [ "${1#-}" != "${1}" ]; then
+        break
+    elif ip link show ${1} > /dev/null 2>&1; then
+        _if_name="${1}"
+        if_info_get "${_if_name}"
+        log "IF ${_if_name}: driver:${_if_drv} pci:${_if_pci} ip:${_ip} mac:${_mac}"
+    elif [ -f "${RUN_DIR}/${1}_drv" ]; then
+        _if_name="${1}"
+        if_info_get "${_if_name}"
+        log "DEV ${_if_name}: driver:${_if_drv} pci:${_if_pci} ip:${_ip} mac:${_mac}"
+    else
+        _host="${1}"
+        _host_name="${_host%%@*}"
+        _mac="${_host##*@}"
+        if [ "${_host_name}" = "${_mac}" ]; then
+            _mac=""
+        fi
+        if [ -z "${_host_name}" ]; then
+            error "parsing host '${_host}'"
+        fi
+        _ip=$(getent hosts "${_host_name}" | head -1 | awk '{print $1}')
+        if [ -z "${_ip}" ]; then
+            _ip="${_host_name}"
+        fi
+        if [ -z "${_mac}" ]; then
+            ping -c 1 "${_ip}" -W 1 -q > /dev/null 2>&1
+            _mac=$(arp -an | grep -w "${_ip}" | awk '{print $4}')
+            if [ -z "${_mac}" ]; then
+                error "getting MAC address for host '${_host}':" \
+                    "try ip@mac format"
+            fi
+        fi
+        log "HOST ${_host}: IP:${_ip} MAC:${_mac}"
+    fi
+    if [ -n "${_ip}" -a -n "${_mac}" ]; then
+        verbose "    IP${_nb_ips}=\"${_ip}\""
+        verbose "    MAC${_nb_ips}=\"${_mac}\""
+        eval IP${_nb_ips}=\"${_ip}\"
+        eval MAC${_nb_ips}=\"${_mac}\"
+        _nb_ips=$((${_nb_ips} + 1))
+    fi
+    if [ -n "${_if_drv}" ]; then
+        verbose "    IF${_nb_ifs}_NAME=\"${_if_name}\""
+        verbose "    IF${_nb_ifs}_DRV=\"${_if_drv}\""
+        eval IF${_nb_ifs}_NAME=\"${_if_name}\"
+        eval IF${_nb_ifs}_DRV=\"${_if_drv}\"
+        IF_NAMES="${IF_NAMES} ${_if_name}"
+        FILE_PREFIX="${FILE_PREFIX}_${_if_name}"
+        _nb_ifs=$((${_nb_ifs} + 1))
+    fi
+    shift
+done
+log "Total: ${_nb_ips} IPs and ${_nb_ifs} interfaces"
+
+if [ "${_nb_ips}" -lt "${NB_IPS}" ]; then
+    error "parsing command line arguments:" \
+        "at least ${NB_IPS} IP(s) expected"
+fi
+if [ "${_nb_ifs}" -lt "${NB_INTERFACES}" ]; then
+    error "parsing command line arguments:" \
+        "at least ${NB_INTERFACES} interface(s) expected"
+fi
+
+
+begin "Locating template files..."
+TEMPLATE_OPT=""
+TEMPLATE_FILE=""
+for _f in \
+    "$(pwd)/${SCRIPT_FNAME}${APP_TEMPLATE_EXT}" \
+    "${0}${APP_TEMPLATE_EXT}" \
+    "${HOME}/.config/${SCRIPT_FNAME}${APP_TEMPLATE_EXT}" \
+    "/usr/local/etc/${SCRIPT_FNAME}${APP_TEMPLATE_EXT}" \
+    "$(pwd)/${DEF_SCRIPT_FNAME}${APP_TEMPLATE_EXT}" \
+    "/usr/local/etc/${DEF_SCRIPT_FNAME}${APP_TEMPLATE_EXT}"
+do
+    verbose "checking ${_f}"
+    if [ -s "${_f}" ]; then
+        log "using template ${_f}"
+        TEMPLATE_FILE=$(mktemp --tmpdir "${SCRIPT_FNAME}.XXXX${APP_TEMPLATE_EXT}")
+        cat "${_f}" | sed \
+            -e "s/\${IP0}/${IP0}/" \
+            -e "s/\${IP1}/${IP1}/" \
+            -e "s/\${IP2}/${IP2}/" \
+            -e "s/\${IP3}/${IP3}/" \
+            -e "s/\${MAC0}/${MAC0}/" \
+            -e "s/\${MAC1}/${MAC1}/" \
+            -e "s/\${MAC2}/${MAC2}/" \
+            -e "s/\${MAC3}/${MAC3}/" \
+            -e "s/\${IF0_NAME}/${IF0_NAME}/" \
+            -e "s/\${IF1_NAME}/${IF1_NAME}/" \
+            -e "s/\${IF2_NAME}/${IF2_NAME}/" \
+            -e "s/\${IF3_NAME}/${IF3_NAME}/" \
+            -e "s/\${IF0_DRV}/${IF0_DRV}/" \
+            -e "s/\${IF1_DRV}/${IF1_DRV}/" \
+            -e "s/\${IF2_DRV}/${IF2_DRV}/" \
+            -e "s/\${IF3_DRV}/${IF3_DRV}/" \
+            > "${TEMPLATE_FILE}"
+        TEMPLATE_OPT="${APP_TEMPLATE_FLAG} ${TEMPLATE_FILE}"
+        break
+    fi
+done
+
+
+begin "Running ${APP_NAME} application..."
+log "DPDK Library:  ${RTE_SDK}/${DESTDIR}"
+log "Application:   ${APP}"
+if [ -n "${TEMPLATE_FILE}" ]; then
+    log "Template file: ${TEMPLATE_FILE}"
+fi
+
+read -p "Press Enter to start ${APP_NAME} or Ctrl+C to abort..." _e
+#clear
+
+
+_mount=$(mount | grep hugetlbfs)
+if [ -z "${_mount}" ]; then
+    begin "Mounting HugeTLBfs to ${TLBFS_DIR}..."
+    sudo mkdir -p ${TLBFS_DIR}
+    sudo mount -t hugetlbfs none ${TLBFS_DIR}
+fi
+_nr_pages=$(cat /proc/sys/vm/nr_hugepages)
+if [ "${_nr_pages}" -eq 0 ]; then
+    begin "Configuring ${NB_HUGEPAGES} huge pages..."
+    sudo -s bash -c "echo ${NB_HUGEPAGES} > /proc/sys/vm/nr_hugepages"
+fi
+
+
+if ! lsmod | grep -w "${UIO_MODULE}" >/dev/null; then
+    begin "Loading ${UIO_MODULE} kernel module..."
+    log "Note: sometimes UIO module is compiled into the kernel," \
+        "so some errors below might occur"
+    if [ "${UIO_MODULE}" = "igb_uio" ]; then
+        sudo modprobe uio
+        sudo insmod "${RTE_SDK}/${DESTDIR}/kmod/igb_uio.ko"
+    else
+        sudo modprobe "${UIO_MODULE}"
+    fi
+fi
+
+begin "Binding interfaces to UIO drivers..."
+log "Note: sometimes interfaces are already bound," \
+    "so some errors bellow might occur"
+_white_list=""
+for _if_name in ${IF_NAMES}; do
+    sudo ifdown "${_if_name}"
+    sudo ifconfig "${_if_name}" down
+    _if_drv=$(cat "${RUN_DIR}/${_if_name}_if_drv")
+    _if_pci=$(cat "${RUN_DIR}/${_if_name}_if_pci")
+    _white_list="${_white_list} -w ${_if_pci}"
+    if [ -n "${_if_drv}" ]; then
+        # use white list instead of bind for Mellanox cards
+        sudo -E ${BIND} -b "${UIO_MODULE}" ${_if_pci}
+    fi
+done
+
+
+begin "Starting..."
+## Clear huge pages
+sudo rm -f "${TLBFS_DIR}/${FILE_PREFIX}*"
+## Block INT signal
+trap "echo Ignoring SIGINT..." INT
+
+delimiter=""
+if [ -n "${*}" ]; then
+    delimiter="--"
+fi
+(
+    if [ -n "${APP_SUBPATH}" ]; then
+        cd ${APP_DIR}
+    fi
+    verbose sudo -E env PATH="${PATH}" ${RUN_PREFIX} ${APP} \
+        -n 4 --socket-mem=${SOCKET_MEM} \
+        --lcores="${DPDK_LCORES}" \
+        ${_white_list} \
+        --file-prefix="${FILE_PREFIX}" ${DPDK_EXTRA_ARGS} \
+        ${delimiter} ${TEMPLATE_OPT} ${*}
+    sudo -E env PATH="${PATH}" ${RUN_PREFIX} ${APP} \
+        -n 4 --socket-mem=${SOCKET_MEM} \
+        --lcores="${DPDK_LCORES}" \
+        ${_white_list} \
+        --file-prefix="${FILE_PREFIX}" ${DPDK_EXTRA_ARGS} \
+        ${delimiter} ${TEMPLATE_OPT} ${*}
+)
+setterm -initialize
+tput init
+rm "${TEMPLATE_FILE}"
+log "App exit code: ${?}"
+
+
+begin "Binding interfaces back to the kernel..."
+log "Bind tool: ${BIND}"
+for _if_name in ${IF_NAMES}; do
+    _if_drv=$(cat "${RUN_DIR}/${_if_name}_if_drv")
+    _if_pci=$(cat "${RUN_DIR}/${_if_name}_if_pci")
+    if [ -n "${_if_drv}" ]; then
+        sudo -E ${BIND} -b "${_if_drv}" "${_if_pci}"
+    fi
+done
+
+log "Done."

@@ -7,38 +7,42 @@
 BACKEND="10.3.210.166" ## storage
 
 usage () {
-    if [ -n "$1" ]; then
-        echo "${0##*/}: $1"
-    else
-        echo "Power Management Frontend Tool"
-        echo "Usage:"
-        echo "    Power on or show status of the specified host(s):"
-        echo "        ${0##*/} {on|show|status} host1 [host2...]"
-        echo "    Power off or reset specified host(s):"
-        echo "        ${0##*/} [-f] {off|reset} [-f] host1 [host2...]"
-        echo "               -f  force power off or reset (do not use soft actions)"
-        echo "    Lock or unlock auto power management for the specified host(s):"
-        echo "        ${0##*/} {lock|unlock} host1 [host2...]"
-        echo "    Activate IPMI console to the specified host:"
-        echo "        ${0##*/} console host"
-        echo "    List all the hosts available in the specified project(s):"
-        echo "        ${0##*/} list project1 [project2...]"
-        echo "    Print backend usage information:"
-        echo "        ${0##*/} help"
-        echo "Example:"
-        echo "    ${0##*/} on l3 l5"
-    fi
+    echo "Power Management Frontend Tool"
+    echo "Usage:"
+    echo "    Power on or show status of the specified host(s):"
+    echo "        ${0##*/} {on|show|status} host1 [host2...]"
+    echo
+    echo "    Power off or reset specified host(s):"
+    echo "        ${0##*/} [-f] {off|reset} [-f] host1 [host2...]"
+    echo "               -f  force power off or reset (do not use soft actions)"
+    echo
+    echo "    Lock or unlock auto power management for the specified host(s):"
+    echo "        ${0##*/} {lock|unlock} host1 [host2...]"
+    echo
+    echo "    Activate console to the specified host:"
+    echo "        ${0##*/} console host"
+    echo
+    echo "    List all the hosts available in the specified project(s):"
+    echo "        ${0##*/} list project1 [project2...]"
+    echo
+    echo "    Print backend usage information:"
+    echo "        ${0##*/} help"
+    echo "Example:"
+    echo "    ${0##*/} on l3 l5"
+    exit 1
+}
+log () {
+    echo "==> ${0##*/}: ${*}"
+}
+error () {
+    log "error ${*}"
     exit 1
 }
 
 run () {
-    if [ "${USER}" = "a" ]; then
-        ssh aber@${BACKEND} "${*}"
-    else
-        ssh ${BACKEND} "${*}"
-    fi
+    ssh ${BACKEND} "${*}"
     if [ "$?" -ne "0" ]; then
-        usage "stoped on error."
+        error "running the backend command"
     fi
 }
 
@@ -49,29 +53,64 @@ log_action () {
 
     case "${__act}" in
     "on"|"off")
-        echo -n "Powering ${__act}"
+        __log="powering ${__act}"
         ;;
     "reset")
-        echo -n "Resetting"
+        __log="resetting"
         ;;
     "status"|"show")
-        echo -n "Quering status of"
+        __log="quering status of"
         ;;
     "lock")
-        echo -n "Locking"
+        __log="locking"
         ;;
     "unlock")
-        echo -n "Unlocking"
+        __log="unlocking"
         ;;
     esac
     case "${__act}" in
     "reset"|"off")
         if [ -z "${__soft}" ]; then
-            echo -n " (hard)"
+            __log="${__log} (hard)"
         fi
         ;;
     esac
-    echo ":${__hosts}"
+    log "${__log}:${__hosts}"
+}
+
+console_ipmi () {
+    local __ip="${1}"
+    local __login="${2}"
+    local __pass="${3}"
+
+    if [ -z "${__ip}" -o -z "${__login}" -o -z "${__pass}" ]; then
+        error "starting IPMI console: no login/pass or IP found\n${__status}"
+    fi
+    if [ -z "$(which ipmitool)" ]; then
+        error "starting IPMI console: no ipmitool found, run apt install ipmitool"
+    fi
+    log "activating IPMI console to" \
+        "${__login}:${__pass}@${__ip}..."
+    echo "Press Enter ~ . to terminate the connection."
+    ipmitool -U ${__login} -P ${__pass} -H ${__ip} -I lanplus sol activate
+    echo
+}
+
+console_mcu () {
+    local __ip="${1}"
+    local __port="${2}"
+    __port=$(( ${__port} + 1 ))
+
+    if [ -z "${__ip}" -o -z "${__port}" ]; then
+        error "starting MCU console: no port or IP found\n${__status}"
+    fi
+    if [ -z "$(which telnet)" ]; then
+        error "starting MCU console: no telnet found, run apt install telnet"
+    fi
+    log "activating MCU console to ${__ip}:${__port}..."
+    echo "Press Ctrl+] then type quite to terminate the connection."
+    telnet "${__ip}" "${__port}"
+    echo
 }
 
 if [ "$#" -lt "1" -o "$1" = "-h" -o "$1" = "--help" ]; then
@@ -102,9 +141,9 @@ for OPT in ${*}; do
                 BACKEND_LIST=$(run pws --list | sort)
                 BACKEND_NAMES=$(echo "${BACKEND_LIST}" | awk '{print $1}')
             fi
-            __n1=`echo "${BACKEND_NAMES}" | egrep -i "(^|-|_)${OPT}"`
+            __n1=$(echo "${BACKEND_NAMES}" | egrep -i "\b${OPT}")
             __n1_h=$(echo "${__n1}" | head -1)
-            __n2=`echo "${BACKEND_NAMES}" | egrep -i "${OPT}"`
+            __n2=$(echo "${BACKEND_NAMES}" | egrep -i "${OPT}")
             __n2_h=$(echo "${__n2}" | head -1)
             if [ -z "${__n1}" ]; then
                 __n1="${__n2}"
@@ -124,7 +163,7 @@ for OPT in ${*}; do
                 esac
             fi
             if [ "${OPT}" != "${__n1}" ]; then
-                echo "Resolved: ${OPT} to ${__n1}"
+                log "resolved: ${OPT} to ${__n1}"
             fi
             HOSTS="${HOSTS} ${__n1}"
         fi
@@ -137,13 +176,16 @@ case "${ACTION}" in
     ## Get the project name(s)
     PROJECTS="${HOSTS}"
     if [ -z "${PROJECTS}" ]; then
-        usage "please specify project(s) to list."
+        PROJECTS="."
+        log "listing all targets..."
+    else
+        PROJECTS=$(echo ${PROJECTS} | tr -s ' ' '|')
+        log "listing ${PROJECTS}..."
     fi
-    PROJECTS=$(echo ${PROJECTS} | tr -s ' ' '|')
     if [ -z "${BACKEND_LIST}" ]; then
         BACKEND_LIST=$(run pws --list | sort)
     fi
-    echo "${BACKEND_LIST}" | egrep -i "\b${PROJECTS}" \
+    echo "${BACKEND_LIST}" | egrep -i "\b(${PROJECTS})" \
         | awk '{
             if ($4) {
                 unlock_time = "23:00:00";
@@ -160,33 +202,35 @@ case "${ACTION}" in
     ;;
 "h"*)
     ACTION="help"
-    echo "Backend usage information:"
+    log "backend usage information:"
     run pws --${ACTION}
     ;;
 *)
     if [ -z "${HOSTS}" ]; then
-        usage "please specify host name(s)."
+        error "getting host name"
     fi
     ## Pass the soft option for off and reset actions
     case "${ACTION}" in
-    "c"*)
+    "c"*|"t"*)
         ACTION="console"
-        TARGET_IPMI=$(run pws --status ${HOSTS})
-        if [ -z "${TARGET_IPMI}" ]; then
-            usage "error getting target status: ${HOSTS}"
+        __status=$(run pws --status ${HOSTS})
+        if [ -z "${__status}" ]; then
+            error "getting target status: ${HOSTS}"
         fi
-        TARGET_IP=$(echo "${TARGET_IPMI}" | grep -i '^IP:' | awk '{print $2}')
-        TARGET_LOGIN=$(echo "${TARGET_IPMI}" | grep -i 'login/pass:' | awk '{print $3}')
-        TARGET_PASS=${TARGET_LOGIN##*/}
-        TARGET_LOGIN=${TARGET_LOGIN%%/*}
-        if [ -z "${TARGET_IP}" -o -z "${TARGET_LOGIN}" -o -z "${TARGET_PASS}" ]; then
-            usage "error getting target credentials:\n${TARGET_IPMI}"
-        fi
-        echo "Activating IPMI console to" \
-            "${TARGET_LOGIN}:${TARGET_PASS}@${TARGET_IP}..."
-        echo "Press Enter ~ . to exit."
-        ipmitool -U ${TARGET_LOGIN} -P ${TARGET_PASS} -H ${TARGET_IP} -I lanplus sol activate
-        echo
+        __ip=$(echo "${__status}" | grep -i '^IP:' | awk '{print $2}')
+        __login=$(echo "${__status}" | grep -i 'login/pass:' | awk '{print $3}')
+        __pass=${__login##*/}
+        __login=${__login%%/*}
+        __port=$(echo "${__status}" | grep -i 'port:' | awk '{print $2}')
+        __type=$(echo "${__status}" | grep -i 'type:' | awk '{print $3}')
+
+        case "${__type}" in
+        ipmi) console_ipmi "${__ip}" "${__login}" "${__pass}";;
+        cvmmcu) console_mcu "${__ip}" "${__port}";;
+        *) error "starting console for target ${HOSTS}:" \
+               "unsupported type ${__type}"
+           ;;
+        esac
         ;;
     "lo"*)
         ACTION="lock"
@@ -220,4 +264,4 @@ case "${ACTION}" in
     esac
     ;;
 esac
-echo "Done."
+log "done."

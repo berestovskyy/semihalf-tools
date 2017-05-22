@@ -13,19 +13,28 @@ usage () {
         echo " - re-establish the connection on host reboot"
         echo " - setup new passwordless peer on host reimage"
         echo
-        echo "Usage: ${0##*/} [user@]host"
+        echo "Usage: ${0##*/} [-h|--help] [user@]host"
         echo "Example:"
         echo "    ${0##*/} l5"
     fi
     exit 1
 }
+log () {
+    echo ${LOG_OPT} "==> ${0##*/}: ${*}"
+}
+error () {
+    log "error ${*}"
+    exit 1
+}
 
-if [ "$#" = "0" ]; then
+if [ "$#" = "0" -o "${1}" = "-h" -o "${1}" = "--help" ]; then
     usage
 fi
 
 while true; do
-    echo -n `date +"[%H:%M:%S]"`" "
+    LOG_OPT="-n"
+    log "$(date +"[%H:%M:%S]") "
+    LOG_OPT=""
     _start_time=$(date "+%s")
     if ssh -AX -o StrictHostKeyChecking=no -o ConnectTimeout=2 \
         -o NumberOfPasswordPrompts=1 ${*}; then
@@ -34,13 +43,12 @@ while true; do
     _end_time=$(date "+%s")
     _diff_time=$((${_end_time} - ${_start_time}))
     if [ "${_diff_time}" -gt "5" ]; then
-        ## Reset the terminal
-        echo "Resetting terminal..."
+        log "resetting terminal..."
         ## old systems use one dash
         setterm -initialize
         tput init
-        echo "Done resetting."
+        log "done resetting."
     fi
     sleep 1
-    passwordless ${1} >/dev/null 2>&1
+    passwordless "${1}" >/dev/null 2>&1
 done

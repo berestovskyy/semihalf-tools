@@ -5,11 +5,11 @@ from StcPython import StcPython
 
 ############# AUTOMATED TESTS LOOP ################
 ### Loop some stress files for some time ##########
-### Then run verification tests ###################
+### Then run verification tests, export results ###
 ### Loop stress files again, etc. #################
 ###################################################
 
-# NOTE: tests are configured as follows:
+# NOTE: tests are configured (in xmls) as follows:
 #	Port 1/1 default gateway - 192.168.202.2/24
 #	Port 1/2 default gateway - 192.168.203.2/24
 #	Chassis IP 		 - 10.2.100.6
@@ -53,12 +53,11 @@ def attach_and_apply():
 # Apply configuration (verify and upload to chassis)
 	stc.apply()
 
-
 def run_stress_test(file_name):
 	common_init(STRESS_TESTS_DIR, file_name)
 	attach_and_apply()
 
-	print("Starting sequencer for test " + file_name + "\n");
+	print("Starting sequencer for test " + file_name + "\n")
 	stc.perform('sequencerStart')
 
 # SAPEE tests have indefinite length, run them for a fixed duration and then stop
@@ -69,20 +68,19 @@ def run_stress_test(file_name):
 	stc.perform('sequencerStop')
 	stc.perform('devicesStopAll')
 	time.sleep(30) #30s
-	print("Sequencer stopped\n");
-
+	print("Sequencer stopped\n")
 
 def run_verification_test(file_name):
 	common_init(VERIFICATION_TESTS_DIR, file_name)
 	attach_and_apply()
 
-	print("Starting sequencer for test " + file_name + "\n");
+	print("Starting sequencer for test " + file_name + "\n")
 	stc.perform('sequencerStart')
 
 	rv = stc.waitUntilComplete() #blocking
 	stc.perform('devicesStopAll')
 	time.sleep(30) #30s
-	print("Sequencer stopped\n");
+	print("Sequencer stopped\n")
 
 ############################################# MAIN LOOP ######################################
 

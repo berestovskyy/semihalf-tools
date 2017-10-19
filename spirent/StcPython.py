@@ -65,7 +65,7 @@ class StcPython(object):
 
     def create(self, _type, **kwargs):
         svec = []
-        if _type != 'project':
+        if _type.lower() != 'project':
             svec.append('-under')
             svec.append(kwargs.pop('under'))
 

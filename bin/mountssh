@@ -1,0 +1,53 @@
+#!/bin/sh
+##
+## Mount Remote SSH Host
+## by Andriy Berestovskyy
+##
+
+usage () {
+	echo "Mount Remote SSH Host"
+	echo "Usage: ${0##*/} [user@]host1 [host2...]"
+	echo "Example:"
+	echo "    ${0##*/} crb1"
+	exit 1
+}
+log () {
+	echo "    ${*}"
+}
+begin () {
+	echo "==> ${0##*/}: ${*}"
+}
+error () {
+	begin "Error ${*}"
+	exit 1
+}
+
+if [ "$#" = "0" -o "${1}" = "-h" -o "${1}" = "--help" ]; then
+	usage
+fi
+
+while [ -n "${1}" ]; do
+	HOST=${1##*@}
+	HOST=${HOST%/}
+	USERNAME=${1%%@*}
+	if [ "${USERNAME}" = "${1}" ]; then
+		USERNAME="${USER}"
+	fi
+	shift
+	begin "Mounting ${USERNAME}@${HOST} to ${HOME}/${HOST}"
+
+	log "creating local directory ${HOME}/${HOST}"
+	if [ ! -d "${HOME}/${HOST}" ]; then
+		mkdir -p "${HOME}/${HOST}"
+	else
+		fusermount -u "${HOME}/${HOST}"
+	fi
+	log "creating remote directory" \
+		"${USERNAME}@${HOST}:/home/${USERNAME}/${HOST}"
+	ssh ${USERNAME}@${HOST} "mkdir -p /home/${USERNAME}/${HOST}"
+	log "mounting ${USERNAME}@${HOST}:/home/${USERNAME}/${HOST}" \
+		"to ${HOME}/${HOST}"
+	sshfs -o idmap=user "${USERNAME}@${HOST}:/home/${USERNAME}/${HOST}" \
+		"${HOME}/${HOST}"
+done
+begin "Done."

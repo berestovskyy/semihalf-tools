@@ -7,12 +7,12 @@
 BACKUP_DIR_FMT="%Y%m%d-%H%M"
 BACKUP_DIR_DATE_LEN="8" ## excluding time, i.e. just len of %Y%m%d
 
-REQUIRE="rsync"
+REQUIRES="rsync"
 
 usage () {
     echo "Incremental Backup Script: local directories -> remote host"
     echo "Requirements:"
-    echo "    apt install ${REQUIRE}"
+    echo "    apt install ${REQUIRES}"
     echo
     echo "Usage:"
     echo "    ${0##*/} <config_file>"
@@ -42,8 +42,8 @@ error () {
     exit 1
 }
 
-if ! which ${REQUIRE} > /dev/null 2>&1; then
-    error "checking the requirements, please run:\n    apt install ${REQUIRE}"
+if ! which ${REQUIRES} > /dev/null 2>&1; then
+    error "checking requirements, please run:\n    apt install ${REQUIRES}"
 fi
 
 ## Check command line arguments

@@ -1,0 +1,484 @@
+#!/bin/sh
+##
+## Contribute Patch(es) to an Open Source Project
+## by Andriy Berestovskyy
+##
+## TODO: install git send-mail
+##
+
+## Known projects
+PROJECTS="DPDK PKTGEN_DPDK OFP ODP_DPDK ODP"
+DPDK_REPO="dpdk.org/git/dpdk"
+DPDK_LIST="dev@dpdk.org"
+PKTGEN_DPDK_REPO="dpdk.org/apps/pktgen-dpdk"
+PKTGEN_DPDK_LIST="dev@dpdk.org"
+OFP_REPO="github.com/OpenFastPath/ofp"
+OFP_LIST="openfastpath@list.openfastpath.org"
+ODP_DPDK_REPO="git.linaro.org/lng/odp-dpdk"
+ODP_DPDK_LIST="lng-odp@lists.linaro.org"
+ODP_REPO="git.linaro.org/lng/odp"
+ODP_LIST="lng-odp@lists.linaro.org"
+
+NAME="${0##*/}"
+
+log () {
+	echo "    ${*}"
+}
+begin () {
+	echo "==> ${*}"
+}
+error () {
+	begin "Error ${*}"
+	exit 1
+}
+usage () {
+	echo "Contribute Patch(es) to an Open Source Project"
+	echo "Usage:"
+	echo "    Run script inside a repo:"
+	echo "    $ cd <project-repo>"
+	echo "    $ ${NAME}"
+	echo "Note:"
+	echo "    The script needs an access to the remote repo"
+	echo "    to check the head commit."
+	exit 1
+}
+
+if [ "${1}" = "-h" -o "${1}" = "--help" ]; then
+	usage
+fi
+
+
+REPO_DIR="$(git rev-parse --show-toplevel 2> /dev/null)"
+if [ "${?}" != "0" ]; then
+	error "getting top level directory: run the script inside a git repo:\n" \
+		"   $ cd <repo>\n" \
+		"   $ ${NAME} ${*}"
+fi
+CONF_DIR="${REPO_DIR}/.${NAME}"
+
+
+begin "Checking basic git configuration..."
+for _o in user.name user.email sendemail.smtpUser sendemail.smtpServer; do
+	if [ -z "$(git config ${_o})" ]; then
+		error "checking git configuration: configure ${_o} option:\n" \
+			"   $ git config ${_o} \"<value>\""
+	fi
+done
+
+
+begin "Detecting project..."
+REMOTES=$(git remote -v 2> /dev/null)
+for _p in ${PROJECTS}; do
+	eval PROJ="${_p}"
+	eval PROJ_REPO="\${${_p}_REPO}"
+	eval PROJ_LIST="\${${_p}_LIST}"
+	if echo "${REMOTES}" | grep "${PROJ_REPO}" > /dev/null; then
+		break
+	fi
+	PROJ=""
+done
+if [ -z "${PROJ}" ]; then
+	error "detecting project: add an official project repo to remotes:\n" \
+		"   $ git remote add <remote> <URL>"
+fi
+PROJ_REPO=$(echo "${REMOTES}" | grep "${PROJ_REPO}" \
+	| head -1 | awk '{print $2}')
+PROJ_REMOTE=$(echo "${REMOTES}" | grep "${PROJ_REPO}" \
+	| head -1 | awk '{print $1}')
+if [ -z "${PROJ_REPO}" -o -z "${PROJ_REMOTE}" ]; then
+	error "getting project repo and remote"
+fi
+log "Project: ${PROJ} (mailing list: ${PROJ_LIST})"
+log "Remote:  ${PROJ_REMOTE} ${PROJ_REPO}"
+
+
+begin "Detecting upstream..."
+PROJ_UPSTREAM="$(git for-each-ref --format='%(upstream:short)' $(git symbolic-ref -q HEAD))"
+if [ -z "${PROJ_UPSTREAM}" ]; then
+	error "detecting upstream: set an upstream to track:\n" \
+		"   $ git branch --set-upstream-to=<upstream>\n" \
+		"   or rename the local branch so it correspond to remote:\n" \
+		"   $ git branch -m <remote_branch>"
+fi
+PROJ_UPSTREAM="${PROJ_UPSTREAM#*/}"
+log "Upstream: ${PROJ_REMOTE}/${PROJ_UPSTREAM}"
+
+
+begin "Checking local repo status..."
+DIFF=$(git diff)
+if [ -n "${DIFF}" ]; then
+	error "checking git status: stash or commit your changes:\n${DIFF}"
+fi
+
+
+begin "Checking current branch is on top of \"${PROJ_REMOTE}/${PROJ_UPSTREAM}\"..."
+PROJ_HEAD=$(git ls-remote "${PROJ_REMOTE}" "${PROJ_UPSTREAM}" | awk '{print $1}')
+CONTAINS=$(git branch --contains ${PROJ_HEAD} | grep '^*')
+if [ -z "${CONTAINS}" ]; then
+	log "Remote commit ID: ${PROJ_HEAD}"
+	error "checking the base: rebase your changes:\n" \
+		"   $ git fetch ${PROJ_REMOTE}\n" \
+		"   $ git rebase -i ${PROJ_REMOTE}/${PROJ_UPSTREAM}"
+fi
+
+
+begin "Getting contribution format..."
+mkdir -p "${CONF_DIR}/words"
+FORMAT="INDEPENDENT"
+COMMITS=$(git cherry "${PROJ_REMOTE}/${PROJ_UPSTREAM}" | grep '^+' \
+	| awk '{print $2}')
+if [ -f "${CONF_DIR}/format" ]; then
+	log "Using previous answer from" \
+		"\"${CONF_DIR}/format\""
+	FORMAT=$(cat "${CONF_DIR}/format")
+else
+	while : ; do
+		log "Commit(s) to contribute:"
+		for _c in ${COMMITS}; do
+			S=$(git log --format="%s" -n 1 ${_c})
+			H=$(git log --format="%h" -n 1 ${_c})
+			if [ -z "${S}" -o -z "${H}" ]; then
+				error "getting subject of commit ${_c}"
+			fi
+			log "  ${H} ${S}"
+		done
+		log "If those commit(s) on the same topic," \
+			"you might want to contribute them as a patch set."
+		log "Choose independent commit(s) otherwise."
+		read -p "    Format? (patch set/independent/Ctrl+C): " \
+			FORMAT
+		case "${FORMAT}" in
+		[pP]*|[sS]*) FORMAT="SET"; break;;
+		[iI]*) FORMAT="INDEPENDENT"; break;;
+		esac
+	done
+fi
+echo "${FORMAT}" > "${CONF_DIR}/format"
+if [ "${FORMAT}" = "SET" ]; then
+	log "Contributing as a patch set"
+else
+	log "Contributing as independent commit(s)"
+fi
+
+
+begin "For each commit to contribute..."
+CONTRIBUTION=""
+USE_ALL=""
+NB_COMMITS=0
+PATCHES=""
+mkdir -p "${CONF_DIR}"
+for _c in ${COMMITS}; do
+	S=$(git log --format="%s" -n 1 ${_c})
+	H=$(git log --format="%h" -n 1 ${_c})
+	if [ -z "${S}" -o -z "${H}" ]; then
+		error "getting subject of commit ${_c}"
+	fi
+	if [ -f "${CONF_DIR}/${H}.use" ]; then
+		log "Using previous answer from \"${CONF_DIR}/${H}.use\""
+		USE=$(cat "${CONF_DIR}/${H}.use")
+	else
+		while : ; do
+			if [ -n "${USE_ALL}" ]; then
+				USE="YES"
+				break
+			fi
+			log "? ${H} ${S}"
+			read -p "    Contribute? (yes/no/show/all/Ctr+C): " USE
+			case "${USE}" in
+			[yY]*) USE="YES"; break;;
+			[nN]*) USE="NO"; break;;
+			[sS]*) git show ${_c};;
+			[aA]*) USE="YES"; USE_ALL="YES"; break;;
+			esac
+		done
+	fi
+	echo "${USE}" > "${CONF_DIR}/${H}.use"
+	echo "${S}" > "${CONF_DIR}/${H}.subj"
+	if [ "${USE}" != "YES" ]; then
+		log "- ${H} ${S}"
+		continue
+	fi
+	log "+ ${H} ${S}"
+	CONTRIBUTION="${CONTRIBUTION} ${_c}"
+	NB_COMMITS=$((${NB_COMMITS} + 1))
+	eval PATCH_${NB_COMMITS}_ID=\"${H}\"
+	eval PATCH_${NB_COMMITS}_SUBJECT=\"${S}\"
+	_sname=""
+	for _w in ${S}; do
+		_w=$(echo "${_w}" | tr '[:upper:]' '[:lower:]' | \
+			tr -d '[:punct:]')
+		_sname="${_sname}-${_w}"
+	done
+	eval PATCH_${NB_COMMITS}_SNAME=\"${_sname}\"
+
+
+	log "Getting original commit IDs..."
+	ORIG=""
+	if [ -f "${CONF_DIR}/${H}.orig" ]; then
+		log "Using original commit ID from \"${CONF_DIR}/${H}.orig\""
+		ORIG=$(cat "${CONF_DIR}/${H}.orig")
+	else
+		log "Guessing original commit ID using \"${CONF_DIR}/words\""
+		MD5s=""
+		for _w in ${S}; do
+			md5=$(echo "${_w}" | tr '[:upper:]' '[:lower:]' | \
+				tr -d '[:punct:]' | md5sum | awk '{print $1}')
+			MD5s="${MD5s} ${CONF_DIR}/words/${md5}"
+		done
+		ORIG=$(cat ${MD5s} 2> /dev/null | sort | uniq -c | sort -rn \
+			| head -1 | awk '{print $2}')
+		if [ -n "${ORIG}" -a -f "${CONF_DIR}/${ORIG}.subj" ]; then
+			SUBJ=$(cat "${CONF_DIR}/${ORIG}.subj")
+			while : ; do
+				log "Seems like the original commit ID is:"
+				log "${ORIG} ${SUBJ}"
+				read -p "    Use it? (yes/no/show/Ctr+C): " USE
+				case "${USE}" in
+				[yY]*) break;;
+				[nN]*) ORIG=""; break;;
+				[sS]*) git show ${ORIG};;
+				esac
+			done
+		else
+			ORIG=""
+		fi
+	fi
+	if [ -z "${ORIG}" ]; then
+		log "This is the original commit."
+		log "Original commit ID will be used to track commit status"
+		ORIG="${H}"
+	fi
+	echo "${ORIG}" > "${CONF_DIR}/${H}.orig"
+	log "Original commit ID: ${ORIG}"
+
+
+	PREV_VER=0
+	VERSION=1
+	VERSION_FLAG=""
+	while : ; do
+		if [ ! -f "${CONF_DIR}/${ORIG}.v${VERSION}.patch.done" ]; then
+			break
+		fi
+		PREV_VER=${VERSION}
+		VERSION=$((${VERSION} + 1))
+		VERSION_FLAG="-v${VERSION}"
+	done
+	log "Patch(set) version ${VERSION}"
+
+
+	if [ "${VERSION}" -gt "1" ]; then
+		if [ -f "${CONF_DIR}/${ORIG}.v${VERSION}.ChangeLog" ]; then
+			log "Using \"${CONF_DIR}/${ORIG}.v${VERSION}.ChangeLog\""
+		else
+			log "Creating version ${VERSION} change log..."
+			echo "# v${VERSION} of ${ORIG} ${S}" \
+				> "${CONF_DIR}/${ORIG}.v${VERSION}.ChangeLog"
+			cat "${CONF_DIR}/${ORIG}.v${PREV_VER}.ChangeLog" \
+				2> /dev/null \
+				| grep -v "^#" \
+				>> "${CONF_DIR}/${ORIG}.v${VERSION}.ChangeLog"
+			"${EDITOR}" "${CONF_DIR}/${ORIG}.v${VERSION}.ChangeLog"
+			eval PATCH_${NB_COMMITS}_CHANGELOG="${CONF_DIR}/${ORIG}.v${VERSION}.ChangeLog"
+		fi
+	fi
+
+
+	CC=""
+	if [ -s "${REPO_DIR}/MAINTAINERS" ]; then
+		log "Getting maintainers emails for CC..."
+		if [ -f "${CONF_DIR}/${ORIG}.cc" ]; then
+			log "Using \"${CONF_DIR}/${ORIG}.cc\""
+			CC="$(cat ${CONF_DIR}/${ORIG}.cc)"
+		else
+			while : ; do
+				log "CC for ${ORIG} ${S}"
+				read -p "    Email? (email/show maintainers/Enter/Ctrl+C): " \
+					EMAIL
+				case "${EMAIL}" in
+				*@*)
+					log "Adding ${EMAIL}"
+					CC="${CC} --cc '${EMAIL}'";;
+				"") break;;
+				[sS]*|[mM]*) less "${REPO_DIR}/MAINTAINERS";;
+				esac
+			done
+		fi
+	fi
+	echo "${CC}" > "${CONF_DIR}/${ORIG}.cc"
+	if [ -n "${CC}" ]; then
+		log "CC: ${CC}"
+	else
+		log "No CC"
+	fi
+
+
+	if [ "${FORMAT}" = "SET" ]; then
+		## TODO
+		error "patch set support is not implemented yet"
+	else
+		git format-patch -1 \
+			--thread=shallow \
+			--no-attach \
+			--signoff \
+			--no-numbered \
+			${VERSION_FLAG} \
+			--notes \
+			--stdout ${_c} \
+			> "${CONF_DIR}/${ORIG}.v${VERSION}.patch"
+		PATCHES="${PATCHES} ${CONF_DIR}/${ORIG}.v${VERSION}.patch"
+		eval PATCH_${NB_COMMITS}_FILE="${CONF_DIR}/${ORIG}.v${VERSION}.patch"
+	fi
+done
+if [ "${NB_COMMITS}" = "0" ]; then
+	log "No commits to contribute."
+	log "Done."
+	exit 0
+fi
+
+
+begin "Updating commits word database..."
+rm "${CONF_DIR}/words/"* 2> /dev/null
+for _c in ${CONTRIBUTION}; do
+	S=$(git log --format="%s" -n 1 ${_c})
+	H=$(git log --format="%h" -n 1 ${_c})
+	if [ -z "${S}" -o -z "${H}" ]; then
+		error "getting subject of commit ${_c}"
+	fi
+	log "  ${H} ${S}"
+	ORIG=$(cat "${CONF_DIR}/${H}.orig")
+	MD5s=""
+	for _w in ${S}; do
+		md5=$(echo "${_w}" | tr '[:upper:]' '[:lower:]' | \
+			tr -d '[:punct:]' | md5sum | awk '{print $1}')
+		echo "${ORIG}" > "${CONF_DIR}/words/${md5}"
+	done
+done
+
+
+## For each contribution
+# for _c in ${CONTRIBUTION}; do
+for _c in ; do
+	S=$(git log --format="%s" -n 1 ${_c})
+	H=$(git log --format="%h" -n 1 ${_c})
+	if [ -z "${S}" -o -z "${H}" ]; then
+		error "getting subject of commit ${_c}"
+	fi
+	begin "Contributing ${H} ${S}..."
+	ORIG=$(cat "${CONF_DIR}/${H}.orig")
+	if [ "${ORIG}" != "${H}" ]; then
+		log "Original commit ID: ${ORIG}"
+		echo "${H}" > "${CONF_DIR}/${ORIG}.v${VERSION}"
+		H="${ORIG}"
+	fi
+
+	while : ; do
+		log "? ${H} [v${VERSION}] ${S}"
+		cat "${CONF_DIR}/${H}.v${VERSION}.ChangeLog" 2> /dev/null \
+			| grep -v "^#" \
+			| awk '{print "    " $0}'
+		read -p "    Ready? (ack/show/new version/change log): " ACT
+		case "${ACT}" in
+		[aA]*) break;;
+		[sS]*) git show ${H};;
+		## TODO
+		[nN]*) log "New version is not implemented yet";;
+		[cC]*|[lL]*) log "Change log is not implemented yet";;
+		esac
+	done
+
+	if [ "${FORMAT}" = "SET" ]; then
+		## TODO
+		# SET="${SET} ${CONF_DIR}/${H}.v${VERSION}.patch"
+		error "patch set support is not implemented yet"
+#		git format-patch -1 \
+#			--thread=shallow \
+#			--no-attach \
+#			--signoff \
+#			--no-numbered \
+#			${VERSION_FLAG} \
+#			--notes \
+#			--stdout ${_c} \
+#			> "${CONF_DIR}/${H}.v${VERSION}.patch"
+		# git format-patch \
+		# 	--thread=shallow \
+		# 	--no-attach \
+		# 	--signoff \
+		# 	--no-numbered \
+		# 	${VERSION_FLAG} \
+		# 	--notes "${PROJ_REMOTE}/${PROJ_UPSTREAM}"
+		break
+	else
+		git format-patch -1 \
+			--thread=shallow \
+			--no-attach \
+			--signoff \
+			--no-numbered \
+			${VERSION_FLAG} \
+			--notes \
+			--stdout ${_c} \
+			> "${CONF_DIR}/${H}.v${VERSION}.patch"
+		PATCHES="${PATCHES} ${CONF_DIR}/${H}.v${VERSION}.patch"
+	fi
+done
+
+
+begin "Selecting destination..."
+ME=$(git config user.email)
+while : ; do
+	log "Patch(es) to send:"
+	SEND_ME="YES"
+	for _p in ${PATCHES}; do
+		log "    ${_p}"
+		if [ -f "${_p}.sent.me" ]; then
+			SEND_ME="NO"
+		fi
+	done
+	log "Your email: ${ME}"
+	if [ "${SEND_ME}" = "YES" ]; then
+		log "NOTE: first send the patch(es) to yourself prior sending" \
+			"to the mailing list"
+	else
+		log "Project mailing list: ${PROJ_LIST}"
+	fi
+	read -p "    Where to send the patch(es)? (me/list/email/directory/Ctrl+C): " EMAIL
+	case "${EMAIL}" in
+	*@*) break;;
+	[mM]*) EMAIL="${ME}"; break;;
+	[lL]*|[pP]*) EMAIL="${PROJ_LIST}"; break;;
+	[dD]*) EMAIL="DIR"; break;;
+	esac
+done
+
+
+if [ "${EMAIL}" = "DIR" ]; then
+	_d="$(date +%Y%m%d-%H%M)"
+	begin "Saving patch(es) to ${_d}..."
+	mkdir -p "${_d}"
+	for _i in $(seq ${NB_COMMITS}); do
+		eval _sname=\"\${PATCH_${_i}_SNAME}\"
+		log "  ${_d}/${_i}${_sname}.patch"
+		cp "${_p}" "${_d}/${_i}${_sname}.patch"
+	done
+else
+	begin "Sending patch(es) to ${EMAIL}..."
+	log "NOTE: for accounts with 2-step verifications use app passwords:"
+	log "      https://security.google.com/settings/security/apppasswords"
+	log
+	git send-email --to "${EMAIL}" ${CC} \
+		--no-chain-reply-to  --thread ${PATCHES}
+	if [ "${?}" != "0" ]; then
+		error "sending patch, refer the log above"
+	fi
+fi
+
+
+begin "Marking patch(es) as sent..."
+for _p in ${PATCHES}; do
+	if [ "${EMAIL}" = "${PROJ_LIST}" ]; then
+		log "  ${_p} (done)"
+		touch "${_p}.done"
+	else
+		log "  ${_p} (me)"
+		touch "${_p}.sent.me"
+	fi
+done

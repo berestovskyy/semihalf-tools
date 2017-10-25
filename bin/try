@@ -4,51 +4,68 @@
 ## by Andriy Berestovskyy
 ##
 
+REQUIRES_TOOLS="passwordless"
+
 usage () {
-    if [ -n "$1" ]; then
-        echo "${0##*/} error: $1"
-    else
-        echo "Try to Connect to a Host"
-        echo " - connect to a remote host using ssh"
-        echo " - re-establish the connection on host reboot"
-        echo " - setup new passwordless peer on host reimage"
-        echo
-        echo "Usage: ${0##*/} [-h|--help] [user@]host"
-        echo "Example:"
-        echo "    ${0##*/} l5"
-    fi
-    exit 1
+	if [ -n "$1" ]; then
+		echo "${0##*/} error: $1"
+	else
+		echo "Try to Connect to a Host"
+		echo "Requires tools:"
+		echo "    ${REQUIRES_TOOLS}"
+		echo " - connect to a remote host using ssh"
+		echo " - re-establish the connection on host reboot"
+		echo " - setup new passwordless peer on host reimage"
+		echo
+		echo "Usage: ${0##*/} [-h|--help] [user@]host"
+		echo "Example:"
+		echo "    ${0##*/} l5"
+	fi
+	exit 1
 }
 log () {
-    echo ${LOG_OPT} "==> ${0##*/}: ${*}"
+	echo ${LOG_OPT} "==> ${0##*/}: ${*}"
 }
 error () {
-    log "error ${*}"
-    exit 1
+	log "error ${*}"
+	exit 1
 }
+## Locate tools
+for _t in ${REQUIRES_TOOLS}; do
+	if which "${_t}" > /dev/null 2>&1; then
+		eval ${_t}="${_t}"
+	else
+		if which "./${_t}" > /dev/null 2>&1; then
+			eval ${_t}="./${_t}"
+		else
+			error "checking required tools," \
+				"please install ${_t} to the PATH"
+		fi
+	fi
+done
 
 if [ "$#" = "0" -o "${1}" = "-h" -o "${1}" = "--help" ]; then
-    usage
+	usage
 fi
 
 while true; do
-    LOG_OPT="-n"
-    log "$(date +"[%H:%M:%S]") "
-    LOG_OPT=""
-    _start_time=$(date "+%s")
-    if ssh -AX -o StrictHostKeyChecking=no -o ConnectTimeout=2 \
-        -o NumberOfPasswordPrompts=1 ${*}; then
-        break
-    fi
-    _end_time=$(date "+%s")
-    _diff_time=$((${_end_time} - ${_start_time}))
-    if [ "${_diff_time}" -gt "5" ]; then
-        log "resetting terminal..."
-        ## old systems use one dash
-        setterm -initialize
-        tput init
-        log "done resetting."
-    fi
-    sleep 1
-    passwordless "${1}" >/dev/null 2>&1
+	LOG_OPT="-n"
+	log "$(date +"[%H:%M:%S]") "
+	LOG_OPT=""
+	_start_time=$(date "+%s")
+	if ssh -AX -o StrictHostKeyChecking=no -o ConnectTimeout=2 \
+		-o NumberOfPasswordPrompts=1 ${*}; then
+		break
+	fi
+	_end_time=$(date "+%s")
+	_diff_time=$((${_end_time} - ${_start_time}))
+	if [ "${_diff_time}" -gt "5" ]; then
+		log "resetting terminal..."
+		## old systems use one dash
+		setterm -initialize
+		tput init
+		log "done resetting."
+	fi
+	sleep 1
+	${passwordless} "${1}" >/dev/null 2>&1
 done

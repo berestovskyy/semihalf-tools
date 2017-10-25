@@ -1,0 +1,193 @@
+#!/bin/sh
+##
+## Add Current User to a Remote Host
+## by Andriy Berestovskyy
+##
+
+REQUIRES="rsync"
+REQUIRES_TOOLS="passwordless"
+
+DEF_PASSWORD="root"
+SETTINGS_FILE=".config/${0##*/}-settings.txt"
+PACKAGES_FILE=".config/${0##*/}-packages.txt"
+
+usage () {
+	echo "Add Current User to a Remote Host"
+	echo "Requires packages:"
+	echo "    apt install ${REQUIRES}"
+	echo "Requires tools:"
+	echo "    ${REQUIRES_TOOLS}"
+	echo "Usage:"
+	echo "    ${0##*/} [-anusvp] [root@]host1 [[root@]host2...]"
+	echo "    -a    do all the steps listed below (default)"
+	echo "    -n    setup new ssh passwordless peer"
+	echo "    -u    add current user ${USER} to a remote host"
+	echo "    -s    update user settings and files listed in" \
+		"~/${SETTINGS_FILE}"
+	echo "    -v    verbose (print more info)"
+	echo "    -p    install packages listed in  ~/${PACKAGES_FILE}"
+	echo "Example:"
+	echo "    ${0##*/} e5l e5r"
+	exit 1
+}
+log () {
+	echo "==> ${0##*/}: ${*}"
+}
+error () {
+	log "error ${*}"
+	exit 1
+}
+verbose () {
+	if [ "${VERBOSE}" = "YES" ]; then
+		log "    ${*}"
+	fi
+}
+if ! which ${REQUIRES} > /dev/null 2>&1; then
+	error "checking required packages, please run:\n" \
+		"   apt install ${REQUIRES}"
+fi
+## Locate tools
+for _t in ${REQUIRES_TOOLS}; do
+	if which "${_t}" > /dev/null 2>&1; then
+		eval ${_t}="${_t}"
+	else
+		if which "./${_t}" > /dev/null 2>&1; then
+			eval ${_t}="./${_t}"
+		else
+			error "checking required tools," \
+				"please install ${_t} to the PATH"
+		fi
+	fi
+done
+
+while getopts ":hanusvp" OPT; do
+	case "${OPT}" in
+	"h"|"?") usage;;
+	"a")
+		SETUP_NEWSSH="YES"
+		SETUP_USER="YES"
+		SETUP_SETTINGS="YES"
+		SETUP_PACKAGES="YES"
+		;;
+	"n") SETUP_NEWSSH="YES";;
+	"u") SETUP_USER="YES";;
+	"s") SETUP_SETTINGS="YES";;
+	"v") VERBOSE="YES";;
+	"p") SETUP_PACKAGES="YES";;
+	esac
+done
+shift $(expr ${OPTIND} - 1)
+if [ \
+	-z "${SETUP_NEWSSH}" \
+	-a -z "${SETUP_USER}" -a -z "${SETUP_SETTINGS}" \
+	-a -z "${SETUP_PACKAGES}" \
+]; then
+	## no arguments - setup all by default
+	SETUP_NEWSSH="YES"
+	SETUP_USER="YES"
+	SETUP_SETTINGS="YES"
+	SETUP_PACKAGES="YES"
+fi
+
+if [ "$#" -eq "0" -o "${1}" = "--help" ]; then
+	usage
+fi
+
+while [ -n "${1}" ]; do
+	HOST=${1##*@}
+	USERNAME=${1%%@*}
+	if [ "${USERNAME}" = "${1}" ]; then
+		USERNAME="root"
+	fi
+
+	if [ -n "${SETUP_NEWSSH}" ]; then
+		log "Setting passwordless access to ${USERNAME}@${HOST}..."
+		${passwordless} -s ${USERNAME}@${HOST}
+	fi
+
+	if [ -n "${SETUP_USER}" ]; then
+		log "Checking ${USER}@${HOST}..."
+		verbose "ssh ${USERNAME}@${HOST} getent passwd ${USER}"
+		_exists=$(ssh ${USERNAME}@${HOST} "getent passwd ${USER}")
+		if [ -n "${_exists}" ]; then
+			log "    ${USER}${HOST} already exists, skipping..."
+		else
+			log "Adding ${USER}@${HOST}..."
+			_comment=$(getent passwd ${USER} | cut -d ':' -f 5 \
+				| cut -d ',' -f 1)
+			if [ -n "${_comment}" ]; then
+				log "   Full Name: ${_comment}"
+			fi
+			verbose "ssh ${USERNAME}@${HOST} sudo useradd \
+				--comment '${_comment}' \
+				-k /etc/skel --home /home/${USER} \
+				--create-home --groups sudo --shell /bin/bash \
+				--user-group ${USER} \
+				&& echo '${USER}:${DEF_PASSWORD}' | sudo chpasswd"
+			ssh ${USERNAME}@${HOST} "sudo useradd \
+				--comment '${_comment}' \
+				-k /etc/skel --home /home/${USER} \
+				--create-home --groups sudo --shell /bin/bash \
+				--user-group ${USER} \
+				&& echo '${USER}:${DEF_PASSWORD}' | sudo chpasswd"
+		fi
+	fi
+	if [ -n "${SETUP_NEWSSH}" ]; then
+		log "Setting passwordless access to ${USER}@${HOST}..."
+		${passwordless} -s ${USER}@${HOST}
+	fi
+
+	if [ -n "${SETUP_SETTINGS}" ]; then
+		log "Updating user settings and files..."
+		for _f in \
+			"${HOME}/${SETTINGS_FILE%/*}/${HOST}-${SETTINGS_FILE##*/}" \
+			"${SETTINGS_FILE%/*}/${HOST}-${SETTINGS_FILE##*/}" \
+			"${HOME}/${SETTINGS_FILE}" \
+			"${SETTINGS_FILE}"
+		do
+			verbose "trying ${_f}"
+			if [ -s "${_f}" ]; then
+				break
+			fi
+		done
+		if [ ! -s "${_f}" ]; then
+			log "    no settings file found ~/${SETTINGS_FILE}," \
+				"skipping..."
+		else
+			verbose "using ${_f}"
+			SETTINGS=$(cat "${_f}" | tr -s '\n' ' ')
+			verbose "(cd ${HOME} &&" \
+				"rsync -zauR ${SETTINGS} ${USER}@${HOST}:)"
+			(cd ${HOME} && rsync -zauR ${SETTINGS} ${USER}@${HOST}:)
+		fi
+	fi
+
+	if [ -n "${SETUP_PACKAGES}" ]; then
+		log "Installing packages..."
+		for _f in \
+			"${HOME}/${PACKAGES_FILE%/*}/${HOST}-${PACKAGES_FILE##*/}" \
+			"${PACKAGES_FILE%/*}/${HOST}-${PACKAGES_FILE##*/}" \
+			"${HOME}/${PACKAGES_FILE}" \
+			"${PACKAGES_FILE}"
+		do
+			verbose "trying ${_f}"
+			if [ -s "${_f}" ]; then
+				break
+			fi
+		done
+		if [ ! -s "${_f}" ]; then
+			log "    no packages file found ~/${PACKAGES_FILE}," \
+				"skipping..."
+		else
+			verbose "using ${_f}"
+			PACKAGES=$(cat "${_f}" | tr -s '\n' ' ')
+			verbose "ssh ${USERNAME}@${HOST} sudo apt-get update -q=4 && sudo aptitude -yo Dpkg::Options::=--force-confold install -q=4 ${PACKAGES} > /dev/null"
+			ssh ${USERNAME}@${HOST} "sudo apt-get update -q=4" \
+				"&& sudo aptitude" \
+				"-yo Dpkg::Options::=--force-confold" \
+				"install -q=4 ${PACKAGES} > /dev/null"
+		fi
+	fi
+	shift
+done
+log "Done."

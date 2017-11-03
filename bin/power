@@ -13,8 +13,8 @@ usage () {
     echo "        ${0##*/} {on|show|status} host1 [host2...]"
     echo
     echo "    Power off or reset specified host(s):"
-    echo "        ${0##*/} [-f] {off|reset} [-f] host1 [host2...]"
-    echo "               -f  force power off or reset (do not use soft actions)"
+    echo "        ${0##*/} [-f] {off|reset|cycle} [-f] host1 [host2...]"
+    echo "               -f|--hard  force power off or reset (do not use soft actions)"
     echo
     echo "    Lock or unlock auto power management for the specified host(s):"
     echo "        ${0##*/} {lock|unlock} host1 [host2...]"
@@ -127,7 +127,7 @@ BACKEND_NAMES=""
 ## Process options
 for OPT in ${*}; do
     case "${OPT}" in
-    "-f")
+    "-f"|"--hard")
         SOFT_OPT=""
         shift
         ;;
@@ -211,7 +211,7 @@ case "${ACTION}" in
     fi
     ## Pass the soft option for off and reset actions
     case "${ACTION}" in
-    "c"*|"t"*)
+    "co"*|"t"*)
         ACTION="console"
         __status=$(run pws --status ${HOSTS})
         if [ -z "${__status}" ]; then
@@ -246,7 +246,7 @@ case "${ACTION}" in
         log_action "${ACTION}" "${HOSTS}" "${SOFT_OPT}"
         run pws ${SOFT_OPT} --${ACTION} ${HOSTS}
         ;;
-    "r"*)
+    "r"*|"cy"*)
         ACTION="reset"
         log_action "${ACTION}" "${HOSTS}" "${SOFT_OPT}"
         run pws ${SOFT_OPT} --${ACTION} ${HOSTS}

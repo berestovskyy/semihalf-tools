@@ -31,10 +31,13 @@ usage () {
 	exit 1
 }
 log () {
+	echo "    ${*}"
+}
+begin () {
 	echo "==> ${0##*/}: ${*}"
 }
 error () {
-	log "error ${*}"
+	begin "Error ${*}"
 	exit 1
 }
 verbose () {
@@ -100,19 +103,19 @@ while [ -n "${1}" ]; do
 		USERNAME="root"
 	fi
 
+	begin "Adding user ${USER} to ${HOST}..."
 	if [ -n "${SETUP_NEWSSH}" ]; then
-		log "Setting passwordless access to ${USERNAME}@${HOST}..."
 		${passwordless} -s ${USERNAME}@${HOST}
 	fi
 
 	if [ -n "${SETUP_USER}" ]; then
-		log "Checking ${USER}@${HOST}..."
+		begin "Checking if user ${USER} already exists on ${HOST}..."
 		verbose "ssh ${USERNAME}@${HOST} getent passwd ${USER}"
 		_exists=$(ssh ${USERNAME}@${HOST} "getent passwd ${USER}")
 		if [ -n "${_exists}" ]; then
-			log "    ${USER}${HOST} already exists, skipping..."
+			log "user ${USER} already exists on ${HOST}, skipping..."
 		else
-			log "Adding ${USER}@${HOST}..."
+			log "adding ${USER}@${HOST}"
 			_comment=$(getent passwd ${USER} | cut -d ':' -f 5 \
 				| cut -d ',' -f 1)
 			if [ -n "${_comment}" ]; then
@@ -121,24 +124,23 @@ while [ -n "${1}" ]; do
 			verbose "ssh ${USERNAME}@${HOST} sudo useradd \
 				--comment '${_comment}' \
 				-k /etc/skel --home /home/${USER} \
-				--create-home --groups sudo --shell /bin/bash \
+				--create-home --groups sudo,root --shell /bin/bash \
 				--user-group ${USER} \
 				&& echo '${USER}:${DEF_PASSWORD}' | sudo chpasswd"
 			ssh ${USERNAME}@${HOST} "sudo useradd \
 				--comment '${_comment}' \
 				-k /etc/skel --home /home/${USER} \
-				--create-home --groups sudo --shell /bin/bash \
+				--create-home --groups sudo,root --shell /bin/bash \
 				--user-group ${USER} \
 				&& echo '${USER}:${DEF_PASSWORD}' | sudo chpasswd"
 		fi
 	fi
 	if [ -n "${SETUP_NEWSSH}" ]; then
-		log "Setting passwordless access to ${USER}@${HOST}..."
 		${passwordless} -s ${USER}@${HOST}
 	fi
 
 	if [ -n "${SETUP_SETTINGS}" ]; then
-		log "Updating user settings and files..."
+		begin "Updating user settings and files..."
 		for _f in \
 			"${HOME}/${SETTINGS_FILE%/*}/${HOST}-${SETTINGS_FILE##*/}" \
 			"${SETTINGS_FILE%/*}/${HOST}-${SETTINGS_FILE##*/}" \
@@ -151,19 +153,19 @@ while [ -n "${1}" ]; do
 			fi
 		done
 		if [ ! -s "${_f}" ]; then
-			log "    no settings file found ~/${SETTINGS_FILE}," \
+			log "no settings file found ~/${SETTINGS_FILE}," \
 				"skipping..."
 		else
 			verbose "using ${_f}"
 			SETTINGS=$(cat "${_f}" | tr -s '\n' ' ')
 			verbose "(cd ${HOME} &&" \
-				"rsync -zauR ${SETTINGS} ${USER}@${HOST}:)"
-			(cd ${HOME} && rsync -zauR ${SETTINGS} ${USER}@${HOST}:)
+				"rsync -vzauR ${SETTINGS} ${USER}@${HOST}:)"
+			(cd ${HOME} && rsync -vzauR ${SETTINGS} ${USER}@${HOST}:)
 		fi
 	fi
 
 	if [ -n "${SETUP_PACKAGES}" ]; then
-		log "Installing packages..."
+		begin "Installing packages..."
 		for _f in \
 			"${HOME}/${PACKAGES_FILE%/*}/${HOST}-${PACKAGES_FILE##*/}" \
 			"${PACKAGES_FILE%/*}/${HOST}-${PACKAGES_FILE##*/}" \
@@ -176,7 +178,7 @@ while [ -n "${1}" ]; do
 			fi
 		done
 		if [ ! -s "${_f}" ]; then
-			log "    no packages file found ~/${PACKAGES_FILE}," \
+			log "no packages file found ~/${PACKAGES_FILE}," \
 				"skipping..."
 		else
 			verbose "using ${_f}"
@@ -190,4 +192,4 @@ while [ -n "${1}" ]; do
 	fi
 	shift
 done
-log "Done."
+begin "Done."

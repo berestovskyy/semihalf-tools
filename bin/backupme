@@ -1,0 +1,82 @@
+#!/bin/sh
+##
+## Incrementally Backup User Files From a Remote Host
+## by Andriy Berestovskyy
+##
+
+REQUIRES_PKGS="rsync"
+
+BACKUP_DEST_DIR="${PWD}"
+
+usage () {
+	echo "Incrementally Backup User Files From a Remote Host"
+	echo "Requires packages:"
+	echo "    apt install ${REQUIRES_PKGS}"
+	echo
+	echo "Usage:"
+	echo "    ${0##*/} [user@]host1 [host2...]"
+	echo
+	echo "Example:"
+	echo "    $ cd backup-dir"
+	echo "    $ ${0##*/} e5l e5r l1"
+	exit 1
+}
+log () {
+	echo "    ${*}"
+}
+begin () {
+	echo "==> ${0##*/}: ${*}"
+}
+error () {
+	begin "Error ${*}"
+	exit 1
+}
+
+if ! dpkg-query -W ${REQUIRES_PKGS} > /dev/null 2>&1; then
+	error "checking required packages, please run:\n" \
+		"   apt install ${REQUIRES_PKGS}"
+fi
+
+if [ "$#" -eq "0" -o "${1}" = "--help" ]; then
+	usage
+fi
+
+for TARGET in ${*}; do
+	BACKUP_HOST=${TARGET##*@}
+	BACKUP_USER=${TARGET%%@*}
+	if [ "${BACKUP_USER}" = "${TARGET}" ]; then
+		BACKUP_USER="${USER}"
+	fi
+	BACKUP_DIR_WC="${BACKUP_USER}@${BACKUP_HOST}.*.backup"
+	BACKUP_DIR="${BACKUP_DEST_DIR}/"$(echo "${BACKUP_DIR_WC}" \
+		| sed "s/\*/$(date +%Y%m%d)/")
+
+	begin "Backing up ${BACKUP_USER}@${BACKUP_HOST} to ${BACKUP_DIR}..."
+
+	## 1. Check if there is a previous backup
+	BACKUP_LINK_DEST=""
+	PREV_BACKUP=$(find ${BACKUP_DEST_DIR} -mindepth 1 -maxdepth 1 -type d \
+		-name "${BACKUP_DIR_WC}" \
+		-a ! -name "${BACKUP_DIR##*/}" \
+		| sort -rn | head -1)
+	if [ -n "${PREV_BACKUP}" ]; then
+		log "incremental backup based on ${PREV_BACKUP##*/}"
+		BACKUP_LINK_DEST="${BACKUP_LINK_DEST} --link-dest ${PREV_BACKUP}"
+	fi
+
+	## 2. Create a backup directory
+	mkdir -p "${BACKUP_DIR}"
+
+	## 3. Backup incrementally
+	rsync -za --del --delete-excluded --relative \
+		${BACKUP_LINK_DEST} \
+		"${BACKUP_USER}@${BACKUP_HOST}:~/" "${BACKUP_DIR}"
+
+	## 4. Compress files
+#	log "    starting to compress ${BACKUP_DIR} in background..."
+#	tar czf "${BACKUP_DIR}.tgz" "${BACKUP_DIR}" &
+done
+#begin "Waiting for the background jobs to complete..."
+#wait
+
+begin "Done."

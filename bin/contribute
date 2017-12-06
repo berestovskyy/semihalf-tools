@@ -3,8 +3,8 @@
 ## Contribute Patch(es) to an Open Source Project
 ## by Andriy Berestovskyy
 ##
-## TODO: install git send-mail
-##
+
+REQUIRES_PKGS="git-email"
 
 ## Known projects
 PROJECTS="DPDK PKTGEN_DPDK OFP ODP_DPDK ODP"
@@ -33,6 +33,8 @@ error () {
 }
 usage () {
 	echo "Contribute Patch(es) to an Open Source Project"
+	echo "Requires packages:"
+	echo "    apt install ${REQUIRES_PKGS}"
 	echo "Usage:"
 	echo "    Run script inside a repo:"
 	echo "    $ cd <project-repo>"
@@ -42,9 +44,13 @@ usage () {
 	echo "    to check the head commit."
 	exit 1
 }
-
 if [ "${1}" = "-h" -o "${1}" = "--help" ]; then
 	usage
+fi
+
+if ! dpkg-query -W ${REQUIRES_PKGS} > /dev/null 2>&1; then
+	error "checking required packages, please run:\n" \
+		"   apt install ${REQUIRES_PKGS}"
 fi
 
 
@@ -113,7 +119,7 @@ fi
 
 begin "Checking current branch is on top of \"${PROJ_REMOTE}/${PROJ_UPSTREAM}\"..."
 PROJ_HEAD=$(git ls-remote "${PROJ_REMOTE}" "${PROJ_UPSTREAM}" | awk '{print $1}')
-CONTAINS=$(git branch --contains ${PROJ_HEAD} | grep '^*')
+CONTAINS=$(git branch --contains ${PROJ_HEAD} 2>/dev/null | grep '^*')
 if [ -z "${CONTAINS}" ]; then
 	log "Remote commit ID: ${PROJ_HEAD}"
 	error "checking the base: rebase your changes:\n" \
@@ -161,7 +167,7 @@ else
 fi
 
 
-begin "For each commit to contribute..."
+begin "For each commit..."
 CONTRIBUTION=""
 USE_ALL=""
 NB_COMMITS=0
@@ -252,35 +258,81 @@ for _c in ${COMMITS}; do
 	log "Original commit ID: ${ORIG}"
 
 
-	PREV_VER=0
-	VERSION=1
-	VERSION_FLAG=""
 	while : ; do
-		if [ ! -f "${CONF_DIR}/${ORIG}.v${VERSION}.patch.done" ]; then
-			break
-		fi
-		PREV_VER=${VERSION}
-		VERSION=$((${VERSION} + 1))
-		VERSION_FLAG="-v${VERSION}"
-	done
-	log "Patch(set) version ${VERSION}"
+		PREV_VER=0
+		VERSION=1
+		VERSION_FLAG=""
+		MESSAGE_ID=""
+		IN_REPLY_TO_FLAG=""
+		ANNOTATE_FLAG=""
+		while : ; do
+			if [ ! -f "${CONF_DIR}/${ORIG}.v${VERSION}.patch.done" ]; then
+				break
+			fi
+			PREV_VER=${VERSION}
+			VERSION=$((${VERSION} + 1))
+			VERSION_FLAG="-v${VERSION}"
+		done
+		log "Patch(set) version ${VERSION}"
 
 
-	if [ "${VERSION}" -gt "1" ]; then
-		if [ -f "${CONF_DIR}/${ORIG}.v${VERSION}.ChangeLog" ]; then
-			log "Using \"${CONF_DIR}/${ORIG}.v${VERSION}.ChangeLog\""
-		else
-			log "Creating version ${VERSION} change log..."
-			echo "# v${VERSION} of ${ORIG} ${S}" \
-				> "${CONF_DIR}/${ORIG}.v${VERSION}.ChangeLog"
-			cat "${CONF_DIR}/${ORIG}.v${PREV_VER}.ChangeLog" \
+		if [ "${VERSION}" -gt "1" ]; then
+			ANNOTATE_FLAG="--annotate"
+
+			if [ -f "${CONF_DIR}/${ORIG}.v${VERSION}.ChangeLog" ]; then
+				log "Using \"${CONF_DIR}/${ORIG}.v${VERSION}.ChangeLog\""
+			else
+				log "Creating version ${VERSION} Change Log..."
+				echo "# $(date -I) v${VERSION} of ${ORIG} ${S}" \
+					> "${CONF_DIR}/${ORIG}.v${VERSION}.ChangeLog"
+				cat "${CONF_DIR}/${ORIG}.v${PREV_VER}.ChangeLog" \
+					2> /dev/null \
+					| grep -v "^#" \
+					>> "${CONF_DIR}/${ORIG}.v${VERSION}.ChangeLog"
+				"${EDITOR}" "${CONF_DIR}/${ORIG}.v${VERSION}.ChangeLog"
+			fi
+			log "Adding Change Log..."
+			cat "${CONF_DIR}/${ORIG}.v${VERSION}.ChangeLog" \
 				2> /dev/null \
 				| grep -v "^#" \
-				>> "${CONF_DIR}/${ORIG}.v${VERSION}.ChangeLog"
-			"${EDITOR}" "${CONF_DIR}/${ORIG}.v${VERSION}.ChangeLog"
-			eval PATCH_${NB_COMMITS}_CHANGELOG="${CONF_DIR}/${ORIG}.v${VERSION}.ChangeLog"
+				> "${CONF_DIR}/${ORIG}.ChangeLog"
+			git notes --ref=changelog remove 2>/dev/null
+			git notes --ref=changelog add \
+				-F "${CONF_DIR}/${ORIG}.ChangeLog"
+
+
+			if [ -f "${CONF_DIR}/${ORIG}.Message-ID" ]; then
+				log "Using original Message-ID from \"${CONF_DIR}/${ORIG}.Message-ID\""
+				MESSAGE_ID=$(cat "${CONF_DIR}/${ORIG}.Message-ID")
+			else
+				while : ; do
+					log "    Check the original message headers for Message-ID."
+					read -p "    Original Message-ID? (...@.../Enter) " ACT
+					case "${ACT}" in
+					*@*) MESSAGE_ID="${ACT}"; break;;
+					"") break;;
+					esac
+				done
+			fi
+			echo "${MESSAGE_ID}" > "${CONF_DIR}/${ORIG}.Message-ID"
+			IN_REPLY_TO_FLAG="--in-reply-to=${MESSAGE_ID}"
+
+			log ""
+			log "> ${H} [v${VERSION}] ${S}"
+			log "In-Reply-To: ${MESSAGE_ID}"
+			log "Change Log:"
+			cat "${CONF_DIR}/${ORIG}.ChangeLog" 2> /dev/null \
+				| awk '{print "\t" $0}'
+			read -p "    All OK? (ok/new version/prev version/change log/Message-ID): " ACT
+			case "${ACT}" in
+			[oO]*|[kK]*) break;;
+			[nN]*) touch "${CONF_DIR}/${ORIG}.v${VERSION}.patch.done";;
+			[pP]*) rm -f "${CONF_DIR}/${ORIG}.v${PREV_VER}.patch.done";;
+			[cC]*|[lL]*) "${EDITOR}" "${CONF_DIR}/${ORIG}.v${VERSION}.ChangeLog";;
+			[mM]*|[iI]*) rm -f "${CONF_DIR}/${ORIG}.Message-ID";;
+			esac
 		fi
-	fi
+	done
 
 
 	CC=""
@@ -316,13 +368,14 @@ for _c in ${COMMITS}; do
 		## TODO
 		error "patch set support is not implemented yet"
 	else
+		log "Formatting patch..."
 		git format-patch -1 \
 			--thread=shallow \
 			--no-attach \
 			--signoff \
 			--no-numbered \
 			${VERSION_FLAG} \
-			--notes \
+			--notes="changelog" \
 			--stdout ${_c} \
 			> "${CONF_DIR}/${ORIG}.v${VERSION}.patch"
 		PATCHES="${PATCHES} ${CONF_DIR}/${ORIG}.v${VERSION}.patch"
@@ -373,16 +426,13 @@ for _c in ; do
 
 	while : ; do
 		log "? ${H} [v${VERSION}] ${S}"
-		cat "${CONF_DIR}/${H}.v${VERSION}.ChangeLog" 2> /dev/null \
+		cat "${CONF_DIR}/${ORIG}.v${VERSION}.ChangeLog" 2> /dev/null \
 			| grep -v "^#" \
 			| awk '{print "    " $0}'
-		read -p "    Ready? (ack/show/new version/change log): " ACT
+		read -p "    Ready? (ack/show): " ACT
 		case "${ACT}" in
 		[aA]*) break;;
 		[sS]*) git show ${H};;
-		## TODO
-		[nN]*) log "New version is not implemented yet";;
-		[cC]*|[lL]*) log "Change log is not implemented yet";;
 		esac
 	done
 
@@ -465,7 +515,9 @@ else
 	log "      https://security.google.com/settings/security/apppasswords"
 	log
 	git send-email --to "${EMAIL}" ${CC} \
-		--no-chain-reply-to  --thread ${PATCHES}
+		${IN_REPLY_TO_FLAG} ${ANNOTATE_FLAG} \
+		--no-chain-reply-to --thread \
+		${PATCHES}
 	if [ "${?}" != "0" ]; then
 		error "sending patch, refer the log above"
 	fi

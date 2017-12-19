@@ -342,7 +342,9 @@ _nb_ifs=0
 FILE_PREFIX=""
 IF_NAMES=""
 while : ; do
-	if [ "${1#-}" != "${1}" ]; then
+	if [ -z "${1}" ]; then
+		break
+	elif [ "${1#-}" != "${1}" ]; then
 		break
 	elif ip link show ${1} > /dev/null 2>&1; then
 		_if_name="${1}"
@@ -515,7 +517,7 @@ sudo rm -f "${TLBFS_DIR}/${FILE_PREFIX}*"
 trap "echo Ignoring SIGINT..." INT
 
 delimiter=""
-if [ -n "${*}" ]; then
+if [ -n "${*}" -o -n "${TEMPLATE_OPT}" ]; then
 	delimiter="--"
 fi
 (
